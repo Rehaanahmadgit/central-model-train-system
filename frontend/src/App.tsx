@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
+import { apiFetch } from "./lib/api";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { RunsList } from "./pages/RunsList";
@@ -17,10 +18,26 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [view, setView] = useState<View>("home");
   const [openRunId, setOpenRunId] = useState<string | null>(null);
+  const [securityWarning, setSecurityWarning] = useState<string | null>(null);
 
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  // DIST-07: surface the backend's security warning as a banner [doc 16].
+  useEffect(() => {
+    let disposed = false;
+    apiFetch<{ security?: { warning?: string | null } }>("/api/v1/system")
+      .then((body) => {
+        if (!disposed && typeof body.security?.warning === "string") {
+          setSecurityWarning(body.security.warning);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   function toggleTheme(): void {
     setTheme((current) => (current === "light" ? "dark" : "light"));
@@ -38,6 +55,14 @@ export default function App() {
       <Sidebar onSelect={navigate} />
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar theme={theme} onToggleTheme={toggleTheme} />
+        {securityWarning && (
+          <div
+            role="alert"
+            className="border-b border-warning bg-warning/10 px-6 py-2 text-sm text-warning"
+          >
+            ⚠ {securityWarning}
+          </div>
+        )}
         <main className="flex flex-1 flex-col gap-8 overflow-auto p-8">
           {openRunId ? (
             <Suspense fallback={<p className="text-text-secondary">Loading live run…</p>}>

@@ -5,6 +5,7 @@ from typing import cast
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.core.auth import verify_token
 from app.core.config import Settings
 from app.realtime.broadcaster import EventBroadcaster
 from app.services import verifications as verifications_service
@@ -16,6 +17,9 @@ router = APIRouter()
 async def verification_stream(websocket: WebSocket, verification_id: str) -> None:
     await websocket.accept()
     settings = cast(Settings, websocket.app.state.settings)
+    if not verify_token(settings, websocket.query_params.get("token")):
+        await websocket.close(code=4401)
+        return
     broadcaster = cast(EventBroadcaster, websocket.app.state.broadcaster)
     # Subscribe first, then snapshot, so no event is lost in between.
     queue = broadcaster.subscribe(verification_id)

@@ -37,7 +37,8 @@ npm install
 Then run both together from the repo root:
 
 ```bash
-make dev          # backend on :8080 + frontend on :5173 (Ctrl+C stops both)
+make dev                    # backend :8080 + frontend :5173 (Ctrl+C stops both)
+make dev BACKEND_PORT=8081  # if 8080 is taken on your machine
 ```
 
 Or run them in two terminals:
@@ -51,15 +52,64 @@ Open `http://localhost:5173`, click **New training**, try the sample dataset and
 watch the full flow: verify → train → live dashboard → evaluation. Check
 `/healthz` and `/readyz`. `make dev` keeps all state in `backend/.dev-data`.
 
-## With Docker
+## Run on your server in 3 steps
+
+1. **Install prerequisites** — Docker, the Compose plugin, and (for the `-gpu` image)
+   the NVIDIA Container Toolkit + a recent NVIDIA driver. See
+   [docs/DOCKER_FOR_BEGINNERS.md](docs/DOCKER_FOR_BEGINNERS.md).
+2. **Run the image** (CPU here; add `--gpus all` and use `-gpu` on a GPU server):
+
+   ```bash
+   docker run -d --name trainhub -p 8080:8080 -v trainhub_data:/data trainhub:0.1.0-cpu
+   ```
+
+3. **Open your browser** at `http://<server-ip>:8080` and click **New training** →
+   **Try sample dataset** to see the whole flow in under a minute.
+
+Zero-config: defaults are `TRAINHUB_HOME=/data`, `TRAINHUB_DEVICE=auto`, port 8080,
+non-root user. All state lives in the `trainhub_data` volume — it survives
+`docker rm` and image upgrades.
+
+### Environment variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TRAINHUB_HOME` | `/data` (image) | Workspace root; all state lives here [doc 04] |
+| `TRAINHUB_DEVICE` | `auto` | `auto` \| `cpu` \| `cuda` \| `cuda:N` [doc 14 §3] |
+| `TRAINHUB_ACCESS_TOKEN` | unset | Optional shared token (set it if not localhost) [doc 10 §2] |
+| `TRAINHUB_BIND_HOST` | `0.0.0.0` (image) | Address to bind; `127.0.0.1` = local only |
+| `TRAINHUB_MAX_CPU_JOBS` | `1` | Concurrent CPU training jobs |
+| `TRAINHUB_LOG_LEVEL` | `INFO` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` |
+
+### Upgrading
+
+`docker pull` the new tag and recreate the container; the `/data` volume keeps
+your datasets, checkpoints and runs (back it up first):
 
 ```bash
-docker compose -f deploy/docker-compose.dev.yml up      # laptop, CPU (bind-mounted source)
-docker compose -f deploy/docker-compose.yml up          # single-container CPU stack, data volume at /data
+docker pull trainhub:0.2.0-cpu
+docker stop trainhub && docker rm trainhub
+docker run -d --name trainhub -p 8080:8080 -v trainhub_data:/data trainhub:0.2.0-cpu
 ```
 
-The compose plugin is required; the image targets are `cpu` and `gpu` [doc 14 §4].
-Base tags and CUDA wheel pairings must be verified against official docs at build time.
+### Offline / air-gapped servers
+
+If the server has no internet for checkpoint downloads, copy the weights to it
+and import them once (sha256 is verified against the catalog):
+
+```bash
+docker exec trainhub trainhub checkpoints import ./weights.bin --catalog-id rtdetr-l@1.0
+```
+
+Or pre-copy a `checkpoints/store` folder into the volume and run
+`docker exec trainhub trainhub checkpoints rescan`.
+
+## With Docker Compose
+
+```bash
+cd deploy && cp .env.example .env   # then edit (set TRAINHUB_ACCESS_TOKEN)
+docker compose up -d
+```
 
 ## Tests and quality gates
 

@@ -17,6 +17,7 @@ from typing import Any
 from app.checkpoints.catalog import CatalogError, ensure_catalog, load_catalog
 from app.checkpoints.resolver import CheckpointError, CheckpointIndex, CheckpointResolver
 from app.core.config import Settings
+from app.core.doctor import format_report, run_doctor
 
 
 def _print(payload: Any) -> None:
@@ -87,6 +88,13 @@ def _list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _doctor(args: argparse.Namespace) -> int:
+    """Plain-words environment check [DIST-05, doc 14 §3.6]."""
+    report = run_doctor(_resolve_home(args))
+    print(format_report(report))
+    return 0 if report.ok else 1
+
+
 def _rescan(args: argparse.Namespace) -> int:
     """Rebuild index.json from the content-addressed store [doc 14 §5]."""
     home = _resolve_home(args)
@@ -119,7 +127,12 @@ def _rescan(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trainhub", description="TrainHub operator CLI")
     parser.add_argument("--home", help="workspace root (default: TRAINHUB_HOME)")
-    checkpoints = parser.add_subparsers(dest="command", required=True).add_parser(
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    doctor = commands.add_parser("doctor", help="check the environment in plain words")
+    doctor.set_defaults(handler=_doctor)
+
+    checkpoints = commands.add_parser(
         "checkpoints", help="catalog, prefetch, import, rescan"
     )
     nested = checkpoints.add_subparsers(dest="subcommand", required=True)

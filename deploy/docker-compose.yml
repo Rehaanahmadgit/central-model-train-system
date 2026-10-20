@@ -5,12 +5,17 @@ services:
     build:
       context: ..
       target: cpu
+      args:
+        GIT_COMMIT: "${GIT_COMMIT:-unknown}"
     image: trainhub:0.1.0-cpu
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       TRAINHUB_HOME: /data
       TRAINHUB_DEVICE: auto
-      # TRAINHUB_ACCESS_TOKEN: set via .env file, never commit [doc 14 §7]
+      TRAINHUB_BIND_HOST: 0.0.0.0
+      # TRAINHUB_ACCESS_TOKEN comes from deploy/.env (never committed).
     volumes:
       - trainhub_data:/data
     ports:

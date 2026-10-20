@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     device: str = "auto"
     # Optional single shared access token; identifies nobody [doc 01 §3, doc 10 §2].
     access_token: SecretStr | None = None
+    # Host the server is bound to; used for the DIST-07 warning (non-localhost
+    # bind without a token). The Docker CMD sets 0.0.0.0; local dev stays 127.0.0.1.
+    bind_host: str = "127.0.0.1"
     # Port matches the compose example [doc 14 §7].
     port: int = Field(default=8080, ge=1, le=65535)
     log_level: str = "INFO"

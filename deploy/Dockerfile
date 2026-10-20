@@ -4,10 +4,11 @@
 # Checkpoints/datasets/runs are NEVER baked in — they live in the /data volume [doc 14 §5].
 
 ARG NODE_IMAGE=node:22-slim
-# D54: runtime standardized on Python 3.12 across laptop, CI and the image
-# (doc 13 §4 "3.11+" superseded by author decision 2026-10-20). VERIFY tag
-# against official python images at build time [doc 14 §4].
+# D54: runtime standardized on Python 3.12 across laptop, CI and the image.
+# python:3.12-slim verified: pullable on docker.io, currently Python 3.12.x.
 ARG PY_BASE=python:3.12-slim
+ARG VERSION=0.1.0
+ARG GIT_COMMIT=unknown
 
 # --- Frontend build ---------------------------------------------------------
 FROM ${NODE_IMAGE} AS frontend-build
@@ -19,11 +20,19 @@ RUN npm run build
 
 # --- Shared backend base -----------------------------------------------------
 FROM ${PY_BASE} AS base
+ARG VERSION=0.1.0
+ARG GIT_COMMIT=unknown
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TRAINHUB_HOME=/data \
-    TRAINHUB_FRONTEND_DIST=/app/frontend-dist
+    TRAINHUB_FRONTEND_DIST=/app/frontend-dist \
+    TRAINHUB_BIND_HOST=0.0.0.0
 WORKDIR /app
+# OCI labels: version + git commit [doc 14 §4, DIST-09].
+LABEL org.opencontainers.image.title="TrainHub" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${GIT_COMMIT}" \
+      org.opencontainers.image.description="Central ML training platform (no database, no user data)"
 COPY backend/pyproject.toml backend/README.md ./
 COPY backend/app ./app
 # Runtime deps + scikit-learn (training extra). torch is per-target below [doc 14 §4].

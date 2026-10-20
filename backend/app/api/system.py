@@ -57,7 +57,7 @@ def system(request: Request) -> dict[str, Any]:
             "used_bytes": usage.used,
             "free_bytes": usage.free,
         },
-        # No GPU on the laptop; pynvml-based values land with slice 8 [doc 14 §3.2].
         "gpu": {"available": False, "message": "No GPU detected"},
         "recovery_warnings": recovery_warnings,
+        "security": dict(getattr(request.app.state, "security", {})),
     }

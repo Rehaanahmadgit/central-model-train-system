@@ -93,5 +93,13 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - Exception to FAST-04 (user-requested, not milestone D1): documented as D63.
 - Container logs were empty because uvicorn's startup line shares a logger with IP-bearing connection lines; app now logs one own startup line (home/device/frontend) — no personal data.
 
+## D1 milestone (doc 16) — 2026-10-20
+- `trainhub doctor` (DIST-05) with plain-words output + tests; `make dev BACKEND_PORT=…`.
+- DIST-07 token: middleware + WS `?token=` + startup warning + UI banner + tests.
+- CPU image built (`trainhub:0.1.0-cpu`, 1.93 GB, torch 694 MB); `docker exec … trainhub doctor` shows all OK/WARN; Playwright e2e passes against the container (sample → RF → verify → train → completed); audit trail in volume confirms it.
+- OCI labels (version + git commit) fixed and verified; `python:3.12-slim` verified.
+- README "3 steps" + env table + upgrade + offline import; `deploy/.env.example`; `docs/DOCKER_FOR_BEGINNERS.md`.
+- `-gpu` target still not published (D2). `make verify`: 226 passed / 33.3 s.
+
 ## Non-goal guards (checked every turn)
 - No database introduced. No client/user info introduced.

@@ -13,6 +13,7 @@ from typing import Any, cast
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.core.auth import verify_token
 from app.core.config import Settings
 from app.realtime.broadcaster import EventBroadcaster
 from app.realtime.events import RunEventLog
@@ -122,6 +123,9 @@ async def run_stream(websocket: WebSocket, run_id: str) -> None:
         await websocket.close(code=4400)
         return
     settings = cast(Settings, websocket.app.state.settings)
+    if not verify_token(settings, websocket.query_params.get("token")):
+        await websocket.close(code=4401)
+        return
     broadcaster = cast(EventBroadcaster, websocket.app.state.broadcaster)
     log = RunEventLog(settings.home, run_id)
     state = _run_state(settings.home, run_id)
@@ -147,6 +151,8 @@ async def run_stream(websocket: WebSocket, run_id: str) -> None:
                 last_seq = int(message.get("last_seq", 0))
             except (TypeError, ValueError):
                 last_seq = 0
+    except WebSocketDisconnect:
+        return  # client closed during the resume window
     except (TimeoutError, ValueError):
         pass  # no resume → the client gets the full replay
 

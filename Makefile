@@ -5,6 +5,10 @@
 PYTHON ?= backend/.venv/bin/python
 # Absolute path so `cd backend && $(PY_BACKEND) ...` works from the repo root.
 PY_BACKEND := $(abspath $(shell command -v $(PYTHON) 2>/dev/null || echo $(abspath $(PYTHON))))
+# Backend port for local dev (make dev BACKEND_PORT=8081). The Vite proxy
+# reads the same value via the VITE_BACKEND_PORT env var.
+BACKEND_PORT ?= 8080
+export VITE_BACKEND_PORT := $(BACKEND_PORT)
 
 .PHONY: help verify verify-full test-fast test-full test-gpu e2e dev check-python
 
@@ -41,9 +45,9 @@ test-gpu: check-python ## GPU smoke tests; requires a CUDA server [doc 16 FAST-0
 e2e: ## Playwright wizard smoke test; backend must be running on :8080
 	npm --prefix frontend run e2e
 
-dev: check-python ## Run backend (:8080) and frontend (:5173) locally
+dev: check-python ## Run backend (:$(BACKEND_PORT)) and frontend (:5173) locally
 	@trap 'kill 0' INT TERM; \
-	(cd backend && TRAINHUB_HOME=./.dev-data $(PY_BACKEND) -m uvicorn app.main:app --port 8080 --reload) & \
+	(cd backend && TRAINHUB_HOME=./.dev-data $(PY_BACKEND) -m uvicorn app.main:app --port $(BACKEND_PORT) --reload) & \
 	cd frontend && npm run dev
 
 check-python:

@@ -22,6 +22,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.health import router as health_router
 from app.api.router import api_router
 from app.checkpoints.catalog import ensure_catalog
+from app.core.auth import security_state, verify_token
 from app.core.config import Settings, get_settings
 from app.core.errors import ApiError
 from app.core.logging import reset_request_id, set_request_id, setup_logging
@@ -93,6 +94,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 resolved.device,
                 "built" if resolved.frontend_dist else "dev",
             )
+            # DIST-07: loud warning when bound to a network with no access token.
+            security = security_state(resolved)
+            application.state.security = security
+            if security.get("warning"):
+                logger.warning("SECURITY: %s", security["warning"])
             # Crash recovery on startup [doc 03 §2.2, doc 04 §3 rule 6].
             try:
                 report = recover_workspace(resolved.home)
@@ -172,6 +178,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
         )
         return response
+
+    @application.middleware("http")
+    async def access_token(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        # Optional shared access token [doc 10 §2, DIST-07]. Only /api paths are
+        # gated; the SPA, /healthz and /readyz stay open so the browser can load
+        # and prompt for the token. OPTIONS (CORS preflight) is never gated.
+        path = request.url.path
+        if request.method == "OPTIONS" or not path.startswith("/api/"):
+            return await call_next(request)
+        if verify_token(resolved, request.headers.get("X-Access-Token")):
+            return await call_next(request)
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": {
+                    "code": "ACCESS_TOKEN_REQUIRED",
+                    "message": "This instance requires the shared access token.",
+                    "details": {},
+                }
+            },
+        )
 
     if resolved.cors_origins:
         # CORS allowlist [doc 10 §5].
