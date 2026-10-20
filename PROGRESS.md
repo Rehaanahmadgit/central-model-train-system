@@ -103,3 +103,15 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 
 ## Non-goal guards (checked every turn)
 - No database introduced. No client/user info introduced.
+
+## D2 — GPU image + distribution (2026-10-20)
+- Pretrained checkpoint now actually loaded into CNN (`cnn.py:_load_pretrained`), proven by 8 CPU tests (commit 2789836). D100 superseded.
+- GPU Dockerfile target implemented: torch 2.7.1 from PyPI (CUDA 12.6 build, verified via wheel metadata). No host CUDA toolkit needed.
+- Compose: CPU + GPU services (GPU behind `profiles: ["gpu"]`, `gpus: all`), `shm_size: 8gb`, default port bind `127.0.0.1:8080:8080`.
+- `@pytest.mark.gpu` smoke test added (`tests/test_gpu.py`).
+- Fixed corrupted `backend/.env.example`, README fence bug, stale torch comments.
+- Validation: `make verify` 231 passed / 15 deselected; `make verify-full` 245 passed / 1 skipped. CPU image built + run (healthz/readyz/doctor/SPA/persistence across recreate OK). GPU image built. Host-native GPU validation on RTX 2050: CUDA available, 2048x2048 matmul OK, `pytest -m gpu` 1 passed.
+- Container GPU (`--gpus all`) validation BLOCKED on this host: NVIDIA Container Toolkit not installed, no passwordless sudo (D113).
+
+## Non-goal guards (checked every turn)
+- No database introduced. No client/user info introduced.

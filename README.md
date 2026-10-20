@@ -22,7 +22,6 @@ real-time audit-grade dashboard. Specification: `doc/00`–`doc/15`.
 Local runs keep all state in `backend/.dev-data` (gitignored). The Docker image
 instead mounts the volume at `/data` and sets `TRAINHUB_HOME=/data`.
 
-```bash
 First-time setup:
 
 ```bash
@@ -54,21 +53,74 @@ watch the full flow: verify → train → live dashboard → evaluation. Check
 
 ## Run on your server in 3 steps
 
-1. **Install prerequisites** — Docker, the Compose plugin, and (for the `-gpu` image)
-   the NVIDIA Container Toolkit + a recent NVIDIA driver. See
-   [docs/DOCKER_FOR_BEGINNERS.md](docs/DOCKER_FOR_BEGINNERS.md).
-2. **Run the image** (CPU here; add `--gpus all` and use `-gpu` on a GPU server):
+1. **Install prerequisites** — Docker Engine + Compose plugin, and (for the `-gpu`
+   image) a current NVIDIA driver + the NVIDIA Container Toolkit. Verify GPU
+   passthrough works before installing TrainHub:
 
    ```bash
-   docker run -d --name trainhub -p 8080:8080 -v trainhub_data:/data trainhub:0.1.0-cpu
+   docker run --rm --gpus all nvidia/cuda:12.6.3-base-ubuntu22.04 nvidia-smi
    ```
 
-3. **Open your browser** at `http://<server-ip>:8080` and click **New training** →
-   **Try sample dataset** to see the whole flow in under a minute.
+   See [docs/DOCKER_FOR_BEGINNERS.md](docs/DOCKER_FOR_BEGINNERS.md) and the
+   [GPU compatibility matrix](#gpu-compatibility).
+
+2. **Run the image.** On a GPU server (the normal production case):
+
+   ```bash
+   docker run -d --name trainhub --gpus all \
+     -p 127.0.0.1:8080:8080 -v trainhub_data:/data \
+     trainhub:0.1.0-gpu
+   ```
+
+   On a CPU-only machine, drop `--gpus all` and use `trainhub:0.1.0-cpu`.
+   `-p 127.0.0.1:8080:8080` binds to localhost only; see
+   [remote access](#remote-access) to expose it safely.
+
+3. **Open your browser** at `http://localhost:8080`, then run the one-line health
+   check:
+
+   ```bash
+   docker exec trainhub trainhub doctor
+   ```
+
+   Click **New training → Try sample dataset** to see the whole flow in under a
+   minute. All state lives in the `trainhub_data` volume — it survives
+   `docker rm` and image upgrades.
 
 Zero-config: defaults are `TRAINHUB_HOME=/data`, `TRAINHUB_DEVICE=auto`, port 8080,
-non-root user. All state lives in the `trainhub_data` volume — it survives
-`docker rm` and image upgrades.
+non-root user (uid 10001). The client needs no Python, PyTorch or CUDA toolkit on
+the host — the image bundles the CUDA runtime.
+
+### Remote access
+
+By default bind to localhost (`127.0.0.1:8080:8080`) so the UI is not exposed to
+the network. To reach it from your own computer, either:
+
+- use an SSH tunnel (recommended): `ssh -L 8080:localhost:8080 user@server`, or
+- expose the port and set a shared access token:
+
+  ```bash
+  docker run -d --name trainhub --gpus all \
+    -p 8080:8080 -e TRAINHUB_ACCESS_TOKEN='<long-random-value>' \
+    -v trainhub_data:/data trainhub:0.1.0-gpu
+  ```
+
+  The browser will prompt for the token once. Put a TLS reverse proxy in front
+  for anything internet-facing.
+
+### GPU compatibility
+
+TrainHub does **not** support every GPU. The tested matrix is:
+
+| Host | NVIDIA driver | Container Toolkit | Image | Status |
+|---|---|---|---|---|
+| Linux x86_64 + NVIDIA GPU | ≥ 525.60.13 (CUDA 12.6) | required | `-gpu` (torch 2.7.1, CUDA 12.6) | **tested** (RTX 2050, 4 GB) |
+| Linux x86_64, no GPU | any | not needed | `-cpu` | **tested** |
+
+GPU image runtime: torch 2.7.1 + CUDA 12.6 (`nvidia-cuda-runtime-cu12==12.6.77`).
+Any NVIDIA GPU supported by CUDA 12.6 should work, but only the configuration
+above is actually validated. Untested: AMD/Apple Silicon/Windows GPU containers,
+older drivers (< 525.60.13), and multi-GPU slots.
 
 ### Environment variables
 
@@ -87,9 +139,10 @@ non-root user. All state lives in the `trainhub_data` volume — it survives
 your datasets, checkpoints and runs (back it up first):
 
 ```bash
-docker pull trainhub:0.2.0-cpu
+docker pull trainhub:0.2.0-gpu
 docker stop trainhub && docker rm trainhub
-docker run -d --name trainhub -p 8080:8080 -v trainhub_data:/data trainhub:0.2.0-cpu
+docker run -d --name trainhub --gpus all -p 127.0.0.1:8080:8080 \
+  -v trainhub_data:/data trainhub:0.2.0-gpu
 ```
 
 ### Offline / air-gapped servers
@@ -108,8 +161,45 @@ Or pre-copy a `checkpoints/store` folder into the volume and run
 
 ```bash
 cd deploy && cp .env.example .env   # then edit (set TRAINHUB_ACCESS_TOKEN)
-docker compose up -d
+docker compose up -d                 # CPU image (no GPU)
+docker compose --profile gpu up -d   # GPU image (--gpus all passthrough)
 ```
+
+The UI binds to `127.0.0.1:8080` by default; set `TRAINHUB_PORT=8080:8080` in
+`deploy/.env` to expose it to the network (set `TRAINHUB_ACCESS_TOKEN` too).
+
+## Build & publish the image
+
+Build locally (no GPU needed to build):
+
+```bash
+docker build -f deploy/Dockerfile --target cpu \
+  --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) -t trainhub:0.1.0-cpu .
+docker build -f deploy/Dockerfile --target gpu \
+  --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) -t trainhub:0.1.0-gpu .
+```
+
+Publish to Docker Hub (replace `TODO(user)` with your namespace):
+
+```bash
+docker login                                            # interactive; never paste tokens in shell history
+docker tag trainhub:0.1.0-cpu TODO(user)/trainhub:0.1.0-cpu
+docker tag trainhub:0.1.0-gpu TODO(user)/trainhub:0.1.0-gpu
+docker push TODO(user)/trainhub:0.1.0-cpu
+docker push TODO(user)/trainhub:0.1.0-gpu
+```
+
+Or GitHub Container Registry:
+
+```bash
+echo "$CR_PAT" | docker login ghcr.io -u TODO(user) --password-stdin
+docker tag trainhub:0.1.0-gpu ghcr.io/TODO(user)/trainhub:0.1.0-gpu
+docker push ghcr.io/TODO(user)/trainhub:0.1.0-gpu
+```
+
+Tag policy: `X.Y.Z-cpu` / `X.Y.Z-gpu` for releases, plus a moving `latest-gpu`
+only after a real GPU-server test. Registry name, token and digests are
+`TODO(user)` until supplied — nothing is published automatically.
 
 ## Tests and quality gates
 

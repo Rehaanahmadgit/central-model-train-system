@@ -52,11 +52,14 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-acc
 
 # --- CPU target (laptop) [doc 14 §2] -----------------------------------------
 FROM base AS cpu
-# CPU-only torch (178 MB wheel vs ~555 MB for the PyPI CUDA build) [D70].
+# CPU-only torch (178 MB wheel vs 821 MB for the PyPI CUDA build) [D70].
 RUN pip install --no-cache-dir torch==2.7.1+cpu --index-url https://download.pytorch.org/whl/cpu
 
-# --- GPU target (server) [doc 14 §2] ------------------------------------------
-# Training slice (S8) switches this target to the CUDA runtime base + CUDA
-# PyTorch wheels. VERIFY exact CUDA base tag and torch wheel pairing against
-# official docs, matched to the server's NVIDIA driver (doc 14 §4).
+# --- GPU target (server) [doc 14 §2, §4] ---------------------------------------
+# torch 2.7.1 from PyPI is the CUDA 12.6 build: it depends on the nvidia-*-cu12
+# wheels, which bundle the CUDA runtime into site-packages. The client needs
+# only the NVIDIA driver + Container Toolkit on the host — no host CUDA toolkit.
+# VERIFY at build time (done 2026-10-20): torch==2.7.1 on PyPI declares
+# nvidia-cuda-runtime-cu12==12.6.77 etc. Driver >= 525.60.13 is required.
 FROM base AS gpu
+RUN pip install --no-cache-dir torch==2.7.1

@@ -30,14 +30,28 @@ Common errors + fixes:
   log out and back in: `sudo usermod -aG docker $USER`.
 
 **Only if you want GPU training**, also install the NVIDIA Container Toolkit and
-a current NVIDIA driver. Check with:
+a current NVIDIA driver. Check each in order:
 
 ```bash
-nvidia-smi
+nvidia-smi                                    # 1. driver + GPU visible on the host
+docker run --rm --gpus all nvidia/cuda:12.6.3-base-ubuntu22.04 nvidia-smi   # 2. GPU visible INSIDE docker
 ```
 
-If that prints a driver version and a GPU name, you are good. If it says
-`command not found`, install the driver first.
+Expected for step 2: the same GPU table as step 1, printed from inside the
+container. If step 2 fails:
+
+- `could not select device driver "nvidia"` → the NVIDIA Container Toolkit is
+  missing or Docker wasn't restarted after installing it:
+  <https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html>,
+  then `sudo systemctl restart docker` and retry.
+- `failed to discover GPU vendor from CDI` → Docker is using CDI mode without a
+  generated CDI spec. Reinstall the toolkit (it ships `nvidia-ctk cdi generate`)
+  or add `nvidia` as a runtime in `/etc/docker/daemon.json`.
+
+Driver requirement: **≥ 525.60.13** (CUDA 12.6). The GPU image bundles torch
+2.7.1 + CUDA 12.6; no host CUDA toolkit is needed. Tested on: RTX 2050 (4 GB
+VRAM), Ubuntu 24.04, driver 595.x. Other NVIDIA GPUs supported by CUDA 12.6
+should work but are not individually validated.
 
 ## Step 1 — pull (or build) the image
 
@@ -61,22 +75,28 @@ docker build -f deploy/Dockerfile --target cpu -t trainhub:0.1.0-cpu .
 ## Step 2 — run it
 
 ```bash
-docker run -d --name trainhub -p 8080:8080 -v trainhub_data:/data trainhub:0.1.0-cpu
+docker run -d --name trainhub -p 127.0.0.1:8080:8080 -v trainhub_data:/data trainhub:0.1.0-cpu
 ```
 
 What each flag does:
 
 - `-d` — run in the background.
 - `--name trainhub` — give the container a fixed name.
-- `-p 8080:8080` — publish the app on your server's port 8080.
+- `-p 127.0.0.1:8080:8080` — publish the app on port 8080, localhost only.
 - `-v trainhub_data:/data` — create (once) and attach a **named volume** so data persists.
 - `trainhub:0.1.0-cpu` — the image.
 
 On a GPU server, add `--gpus all` and use the `-gpu` tag:
 
 ```bash
-docker run -d --name trainhub --gpus all -p 8080:8080 -v trainhub_data:/data trainhub:0.1.0-gpu
+docker run -d --name trainhub --gpus all \
+  -p 127.0.0.1:8080:8080 -v trainhub_data:/data trainhub:0.1.0-gpu
 ```
+
+`127.0.0.1:8080:8080` binds the UI to localhost only — the safe default. To open
+it from your own computer, use an SSH tunnel
+(`ssh -L 8080:localhost:8080 user@server`) or read
+[remote access](#remote-access) below.
 
 Expected: `docker run` prints a long container id (e.g. `7f3a…c2d1`) and returns.
 
@@ -103,8 +123,28 @@ mean fine; `[FAIL]` lines say what to fix. The most common `[FAIL]`:
   Fix: `mkdir -p /host/dir && sudo chown 10001:10001 /host/dir`, **or** switch to
   a named volume (`-v trainhub_data:/data`) which Docker sets up correctly.
 
-Then open `http://<server-ip>:8080`. Click **New training → Try sample dataset**
+Then open `http://localhost:8080` (or the tunnel/remote URL you chose). Click **New training → Try sample dataset**
 and you should see a real (tiny) training run complete in under a minute.
+
+## Remote access
+
+The UI is bound to localhost by default so nothing is exposed to the network.
+To reach it from another computer, pick one:
+
+- **SSH tunnel (recommended):** `ssh -L 8080:localhost:8080 user@server`, then
+  open `http://localhost:8080` on your own machine. Nothing is exposed publicly.
+- **Expose the port + access token:** restart with `-p 8080:8080` (instead of
+  `127.0.0.1:8080:8080`) and set a shared token:
+
+  ```bash
+  docker run -d --name trainhub --gpus all \
+    -p 8080:8080 -e TRAINHUB_ACCESS_TOKEN='<long-random-value>' \
+    -v trainhub_data:/data trainhub:0.1.0-gpu
+  ```
+
+  The browser prompts for the token once. For anything reachable from the open
+  internet, put a TLS reverse proxy (nginx/Caddy) in front — the token is not a
+  substitute for TLS.
 
 ## Daily operations
 
@@ -132,7 +172,7 @@ Upgrade to a newer version:
 ```bash
 docker pull trainhub:0.2.0-cpu                       # 1. fetch the new image
 docker stop trainhub && docker rm trainhub           # 2. remove the old container (data stays)
-docker run -d --name trainhub -p 8080:8080 -v trainhub_data:/data trainhub:0.2.0-cpu  # 3. recreate
+docker run -d --name trainhub -p 127.0.0.1:8080:8080 -v trainhub_data:/data trainhub:0.2.0-cpu  # 3. recreate
 ```
 
 ## Air-gapped servers (no internet)

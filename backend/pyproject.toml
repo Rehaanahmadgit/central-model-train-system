@@ -31,8 +31,9 @@ dev = [
     "types-pyyaml==6.0.12.20260906",
 ]
 # Real trainers [doc 08 §2]. ``torch`` is NOT listed here: the CPU image installs
-# torch==2.6.0+cpu from https://download.pytorch.org/whl/cpu (the PyPI Linux wheel
-# bundles CUDA and is ~3x larger). The GPU image swaps in the CUDA build (D70).
+# torch==2.7.1+cpu from https://download.pytorch.org/whl/cpu (178 MB). The GPU
+# image installs torch==2.7.1 from PyPI, which is the CUDA 12.6 build (821 MB)
+# and pulls the nvidia-*-cu12 runtime wheels as dependencies (D70).
 training = [
     "scikit-learn==1.9.1",
 ]

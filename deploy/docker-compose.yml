@@ -1,5 +1,11 @@
 # Production compose [doc 14 §7]. One persistent data volume = all state [doc 04].
-# The reverse proxy (nginx/Caddy) with TLS + optional token check sits in front [doc 03 §1].
+#
+#   docker compose up -d                 # CPU image (laptop / no GPU)
+#   docker compose --profile gpu up -d   # GPU image (--gpus all passthrough)
+#
+# The UI binds to 127.0.0.1 by default. To reach it from other machines set
+# TRAINHUB_PORT=8080:8080 (or 0.0.0.0:8080:8080) and set TRAINHUB_ACCESS_TOKEN.
+
 services:
   trainhub:
     build:
@@ -19,7 +25,32 @@ services:
     volumes:
       - trainhub_data:/data
     ports:
-      - "8080:8080" # behind a private network reverse proxy [doc 10 §2]
+      - "${TRAINHUB_PORT:-127.0.0.1:8080}:8080"
+    # PyTorch DataLoader workers need shared memory [doc 14 §4.2].
+    shm_size: "8gb"
+
+  trainhub-gpu:
+    profiles: ["gpu"]
+    build:
+      context: ..
+      target: gpu
+      args:
+        GIT_COMMIT: "${GIT_COMMIT:-unknown}"
+    image: trainhub:0.1.0-gpu
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TRAINHUB_HOME: /data
+      TRAINHUB_DEVICE: auto
+      TRAINHUB_BIND_HOST: 0.0.0.0
+    volumes:
+      - trainhub_data:/data
+    ports:
+      - "${TRAINHUB_PORT:-127.0.0.1:8080}:8080"
+    shm_size: "8gb"
+    # NVIDIA Container Toolkit required on the host [doc 14 §4.2].
+    gpus: all
 
 volumes:
   trainhub_data:
