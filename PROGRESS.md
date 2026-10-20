@@ -35,7 +35,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [x] S9 — Live Run page. **DONE 2026-10-20.** State badge + elapsed/ETA/progress, Pause/Resume/Stop, metric chart (smoothing + zoom), windowed log terminal (last 400 lines, search + level filter), system panel (CPU/RAM, "No GPU detected"), events timeline, Run Info panel (params, dataset hash, checkpoint+sha, seed, env versions, hardware, timestamps), connection indicator, reload restores full state via snapshot + `last_seq` replay. Runs list → LiveRun. Also: two-level gate (`make verify` + `make verify-full`, CI runs full), deterministic fork lock test, ProcessPool shutdown fix, torch 2.7.1 pin upgrade. `make verify` green: **218 tests in 50.73 s**; `make verify-full` green: **220 tests in 54.78 s**. Note: true log virtualization deferred to S11.
 - [x] S10 — New Training Wizard end to end. **DONE 2026-10-20.** 5-step stepper (always visible): Dataset (drag-drop + chunked upload with speed/ETA + pause/resume + "Try sample dataset" via `POST /datasets/sample` DIST-11), Model (searchable cards from `/models` with needs-GPU badge), Verify (reuses streaming checklist; Next only on pass, warnings need acknowledgement), Configure (form from hparam schema, Basic/Advanced, checkpoint override, train-from-scratch), Train (summary → `POST /runs` → LiveRun). Home "New training" opens the wizard. Token-aware API client (`lib/api.ts`). Plugin catalog import-free. 7 slow tests marked; `make verify` **215 tests / 31.0 s**, `make verify-full` **222 tests / 68.8 s**. Playwright e2e written, NOT RUN (Chromium not installed).
 - [x] S11 — Pause/resume/stop + periodic checkpoints + `interrupted` recovery + failure classification. **DONE 2026-10-20.** UI buttons drive the real subprocess (pause→resume→stop end-to-end test); per-epoch `last.ckpt`/`best.ckpt` with full state (model+optimizer+epoch) and exact resume via `POST /runs/{id}/retry`; `interrupted` runs get a Resume button; failure reasons (WORKER_LOST/OOM/NAN_LOSS/DATA_ERROR/UNKNOWN) shown with fix hints; NaN guard + early stopping (patience 3). Log terminal stays windowed (D89: cap 200 lines, virtualization not worth it). `make verify` **215 tests / 27.6 s**; `make verify-full` **225 tests / 102.9 s**.
-- [ ] S12 — Evaluation report + MVP acceptance (PRD §10) incl. privacy grep test.
+- [x] S12 — Evaluation report + MVP acceptance (PRD §10). **DONE 2026-10-20.** Confusion matrix + per-class table (CNN) / basic metrics (RF) written to `artifacts/evaluation.json`, served by `GET /runs/{id}/evaluation`, shown on the run page "Evaluation" tab. Three CNN bug fixes (best epoch, resume-empty-range, patience=0). MVP acceptance table below. `make dev` for local run. DEFERRED to Phase 2 (D99): export, model registry, compare, Optuna, notifications.
 
 ## Distribution workstream (doc 16 §2)
 - [ ] DIST-01 cpu/gpu + latest tags — Dockerfile has `cpu`/`gpu` targets, but `gpu` is empty and no tag/publish script exists; registry `TODO(user)`.
@@ -57,6 +57,18 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [x] FAST-03 one verify + one targeted run per slice — followed this slice (one `make verify`, no command spam).
 - [x] FAST-04 no Docker builds mid-slice — image build NOT RUN.
 - [x] FAST-05/06 file and reply discipline — state files updated, no spec-index repeat.
+
+## MVP acceptance (doc 01 §10) — evidence
+| # | Criterion | Status | Evidence |
+|---|---|---|---|
+| 1 | Upload → model → verify → pass/fail details | ✅ | `test_verification_full_flow_passes`, `test_samples.py`, e2e `wizard.spec.ts` |
+| 2 | Pass → Start Training → job starts | ✅ | `test_random_forest_trains_end_to_end` (real subprocess) |
+| 3 | Checkpoint downloaded once, reused | ⚠️ resolver only | `test_second_resolve_uses_cache_without_http`, `test_two_resolvers_download_exactly_once`; no trainer consumes a pretrained weight yet (D100) |
+| 4 | Live loss/accuracy + logs; refresh restores state | ✅ | `test_ws_stream.py` snapshot/resume; S9 LiveRun |
+| 5 | `run.json` full record, no personal data | ✅ | `test_random_forest_trains_end_to_end` (env fields), `test_workspace_contains_no_personal_data` |
+| 6 | Killed subprocess → `failed` + reason; API up | ✅ | `test_kill_worker_marks_failed_worker_lost` |
+| 7 | Restart mid-training → `interrupted`, resume | ✅ | `test_restart_marks_running_run_interrupted` + `test_exact_resume_from_last_checkpoint` |
+| 8 | Privacy grep: zero emails/IPs/user-agents | ✅ | `test_workspace_contains_no_personal_data` (incl. IPv6) |
 
 ## MVP acceptance (doc 01 §10)
 1. [x] Upload → model → verification → pass/fail details (S3+S5+S6).

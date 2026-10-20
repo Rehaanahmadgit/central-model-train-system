@@ -23,22 +23,33 @@ Local runs keep all state in `backend/.dev-data` (gitignored). The Docker image
 instead mounts the volume at `/data` and sets `TRAINHUB_HOME=/data`.
 
 ```bash
-# Backend
+First-time setup:
+
+```bash
 cd backend
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
-cp .env.example .env            # optional; sets TRAINHUB_HOME=./.dev-data, demo run
-.venv/bin/uvicorn app.main:app --port 8080
-
-# Frontend (proxies /api and /ws to :8080)
-cd frontend
+.venv/bin/pip install -e ".[dev,training]"
+.venv/bin/pip install torch==2.7.1+cpu --index-url https://download.pytorch.org/whl/cpu
+cd ../frontend
 npm install
-npm run dev
 ```
 
-Open `http://localhost:5173` (frontend) or `http://localhost:8080/api/v1/docs` (API).
-With `TRAINHUB_DEMO_FAKE_RUN=true` the backend streams a hello-world run into the
-live demo chart (Sidebar → Runs). Check `/healthz` and `/readyz`.
+Then run both together from the repo root:
+
+```bash
+make dev          # backend on :8080 + frontend on :5173 (Ctrl+C stops both)
+```
+
+Or run them in two terminals:
+
+```bash
+cd backend && .venv/bin/uvicorn app.main:app --port 8080 --reload
+cd frontend && npm run dev
+```
+
+Open `http://localhost:5173`, click **New training**, try the sample dataset and
+watch the full flow: verify → train → live dashboard → evaluation. Check
+`/healthz` and `/readyz`. `make dev` keeps all state in `backend/.dev-data`.
 
 ## With Docker
 

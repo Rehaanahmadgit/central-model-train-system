@@ -114,3 +114,14 @@ Every decision with date, reason, source doc section. `PENDING` = proposed, awai
 | D91 | NaN/Inf guard (train + val loss) → `NAN_LOSS` failure; early stopping with `patience=3`, `min_delta=0.0` on `val/accuracy` | doc 08 §5 | accepted |
 | D92 | `POST /runs/{id}/retry` with `{resume_from_last, name?, config?}`: new run linked by `parent_run_id`, inherits parent config (overridable), and the worker calls `plugin.resume()` on the parent's `last.ckpt` when `resume_from` is set | doc 05 §5 | accepted |
 | D93 | Pause→resume→stop and exact-resume are tested at the **API level** (pytest `@slow`), not a second Playwright test — browser pause timing is flaky and adds no coverage beyond the real-subprocess API test | user instruction ("agar 15s ke andar ho, warna API level") | accepted |
+
+## 2026-10-20 — S12 evaluation + MVP acceptance
+| # | Decision | Reason / source | Status |
+|---|---|---|---|
+| D94 | CNN `TrainResult.best.epoch` now reports the real best epoch (tracked on improvement), never 0 on a fresh run | bug fix (user) | accepted |
+| D95 | `epoch` is initialized before the training loop, so a resume where `start_epoch > epochs` returns a clean `completed` instead of `UnboundLocalError` | bug fix (user) | accepted |
+| D96 | `patience`/`min_delta` no longer use `or` fallbacks: `patience=0` disables early stopping, `None` → default 3. Help text added to the CNN hparam schema so the Configure form explains both | bug fix (user) | accepted |
+| D97 | `make dev` starts backend (:8080, `--reload`) + frontend (:5173) in one command with `trap 'kill 0'` so Ctrl+C stops both. README "Local development" rewritten with exact first-time + run commands | user instruction | accepted |
+| D98 | Evaluation report: CNN writes a confusion matrix + per-class precision/recall/F1 + accuracy to `artifacts/evaluation.json`; RF writes basic accuracy/rmse. Served via `GET /runs/{id}/evaluation` and shown on the run page "Evaluation" tab | doc 05 §5, doc 12 S12 | accepted |
+| D99 | **DEFERRED to Phase 2** (out of MVP): export (ONNX/TorchScript), model registry, run comparison, Optuna hyperparameter tuning, notifications. Documented here so scope stays honest | doc 12 Phase 2 | accepted |
+| D100 | MVP acceptance criterion 3 (checkpoint downloaded once) is verified at the **resolver** level (lock/sha/index tests), but no trainer consumes a real pretrained checkpoint yet — the two MVP trainers are from-scratch by design (D70, doc 14 §3.4). Honest status: resolver proven, end-to-end pretrained download deferred to the GPU/D1 milestone | PRD §10.3 | accepted |

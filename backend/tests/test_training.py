@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 from fastapi.testclient import TestClient
-from fixtures.make_datasets import build_classification, build_tabular, to_zip
+from fixtures.make_datasets import build_classification, build_tabular, materialize, to_zip
 from helpers import upload_dataset
 
 from app.core.config import Settings
@@ -139,6 +139,13 @@ def test_cnn_trains_end_to_end(client: TestClient, home: Path) -> None:
     records = list(read_jsonl(home / "runs" / run_id / "events.jsonl"))
     metric_names = {r["data"]["name"] for r in records if r["type"] == "metric"}
     assert {"train/loss", "val/loss", "val/accuracy"} <= metric_names
+    # Evaluation report is written and served [doc 05 §5].
+    assert (home / "runs" / run_id / "artifacts" / "evaluation.json").is_file()
+    evaluation = client.get(f"/api/v1/runs/{run_id}/evaluation")
+    assert evaluation.status_code == 200
+    assert evaluation.json()["task"] == "image_classification"
+    assert evaluation.json()["confusion_matrix"]
+    assert evaluation.json()["per_class"]
 
 
 def test_models_endpoint_lists_trainers(client: TestClient) -> None:
@@ -356,3 +363,71 @@ def test_rf_resume_unavailable_without_checkpoint(client: TestClient, home: Path
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "RESUME_UNAVAILABLE"
+
+
+@pytest.mark.slow
+def test_cnn_best_epoch_is_real(client: TestClient, home: Path) -> None:
+    """A fresh run reports the actual best epoch, never 0 [bug fix (a)]."""
+    run_id = _start_run(
+        client,
+        entries=build_classification(per_class=4, size=(32, 32)),
+        model_family="cnn",
+        config={"epochs": 2, "batch_size": 2},
+    )
+    body = _wait_run(client, run_id)
+    assert body["state"] == "completed", body
+    assert body["best"]["epoch"] >= 1
+    assert body["best"]["metric"] == "val/accuracy"
+
+
+@pytest.mark.slow
+def test_resume_without_epoch_increase_is_clean(client: TestClient, home: Path) -> None:
+    """Retry resume_from_last with equal epochs must not crash [bug fix (b)]."""
+    first_id = _start_run(
+        client,
+        entries=build_classification(per_class=3, size=(32, 32)),
+        model_family="cnn",
+        config={"epochs": 2, "batch_size": 2},
+    )
+    first = _wait_run(client, first_id)
+    assert first["state"] == "completed"
+
+    response = client.post(
+        f"/api/v1/runs/{first_id}/retry", json={"resume_from_last": True}
+    )
+    assert response.status_code == 202, response.text
+    second = _wait_run(client, response.json()["id"])
+    # start_epoch (3) > epochs (2): the loop is empty and the run still
+    # completes cleanly, reporting the parent's best epoch — no UnboundLocalError.
+    assert second["state"] == "completed", second
+    assert second["best"]["epoch"] >= 1
+
+
+def test_cnn_patience_zero_disables_early_stopping(tmp_path: Path) -> None:
+    """patience=0 must disable early stopping, not silently become 3 [bug fix (c)]."""
+    from types import SimpleNamespace
+
+    from app.core.device import resolve_device
+    from app.training.plugins.cnn import CNNTrainer
+    from app.verification.manifest import build_manifest, write_manifest
+
+    raw = materialize(tmp_path / "raw", build_classification(per_class=2, size=(32, 32)))
+    summary = build_manifest(raw, "image_folder", sample_cap=100)
+    write_manifest(tmp_path / "manifest.parquet", summary.rows)
+
+    def make(config: dict) -> CNNTrainer:
+        ctx = SimpleNamespace(
+            dataset_root=raw,
+            manifest_path=tmp_path / "manifest.parquet",
+            config=config,
+            seed=42,
+            device=resolve_device("cpu"),
+            output_dir=tmp_path / "artifacts",
+            emit_log=lambda *args, **kwargs: None,
+        )
+        trainer = CNNTrainer()
+        trainer.prepare(ctx)
+        return trainer
+
+    assert make({"epochs": 1, "batch_size": 2, "imgsz": 32, "patience": 0})._patience == 0
+    assert make({"epochs": 1, "batch_size": 2, "imgsz": 32})._patience == 3

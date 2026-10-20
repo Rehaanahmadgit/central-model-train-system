@@ -117,6 +117,20 @@ async def stop(run_id: str, request: Request) -> dict[str, Any]:
     return {"id": run_id, "status": "stop_requested"}
 
 
+@router.get("/{run_id}/evaluation")
+def get_evaluation(run_id: str, request: Request) -> dict[str, Any]:
+    """Evaluation report from artifacts/evaluation.json [doc 05 §5]."""
+    path = _home(request) / "runs" / _check_run_id(run_id) / "artifacts" / "evaluation.json"
+    if not path.is_file():
+        raise ApiError(404, "EVALUATION_NOT_FOUND", "this run has no evaluation report yet")
+    from app.storage.atomic import read_json
+
+    data = read_json(path)
+    if not isinstance(data, dict):
+        raise ApiError(500, "EVALUATION_CORRUPT", "evaluation report is unreadable")
+    return data
+
+
 @router.get("/{run_id}/events")
 def get_events(run_id: str, request: Request, after_seq: int = 0) -> dict[str, Any]:
     log = RunEventLog(_home(request), _check_run_id(run_id))

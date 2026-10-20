@@ -42,13 +42,53 @@ METADATA: dict[str, dict[str, Any]] = {
         "hparam_schema": {
             "type": "object",
             "properties": {
-                "epochs": {"type": "integer", "minimum": 1, "default": 2},
-                "batch_size": {"type": "integer", "minimum": 1, "default": 4},
-                "imgsz": {"type": "integer", "minimum": 16, "maximum": 1024, "default": 32},
-                "lr": {"type": "number", "minimum": 1e-6, "default": 0.001},
+                "epochs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 2,
+                    "description": "Number of training epochs.",
+                },
+                "batch_size": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 4,
+                    "description": "Images per gradient step.",
+                },
+                "imgsz": {
+                    "type": "integer",
+                    "minimum": 16,
+                    "maximum": 1024,
+                    "default": 32,
+                    "description": "Input image size in pixels (square).",
+                },
+                "lr": {
+                    "type": "number",
+                    "minimum": 1e-6,
+                    "default": 0.001,
+                    "description": "Learning rate for Adam.",
+                },
+                "patience": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 3,
+                    "description": "Early stopping patience in epochs; 0 disables early stopping.",
+                },
+                "min_delta": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0.0,
+                    "description": "Minimum val/accuracy improvement to count as progress.",
+                },
             },
         },
-        "default_hparams": {"epochs": 2, "batch_size": 4, "imgsz": 32, "lr": 0.001},
+        "default_hparams": {
+            "epochs": 2,
+            "batch_size": 4,
+            "imgsz": 32,
+            "lr": 0.001,
+            "patience": 3,
+            "min_delta": 0.0,
+        },
     },
 }
 

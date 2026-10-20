@@ -76,6 +76,7 @@ export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
   const [now, setNow] = useState(Date.now());
   const [logQuery, setLogQuery] = useState("");
   const [logLevel, setLogLevel] = useState("all");
+  const [tab, setTab] = useState<"live" | "evaluation">("live");
 
   // Static run info (run.json): params, checkpoint, seed, env, timestamps.
   useEffect(() => {
@@ -214,6 +215,24 @@ export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
         </div>
       )}
 
+      <div role="tablist" aria-label="Run views" className="flex gap-1 border-b border-border">
+        {(["live", "evaluation"] as const).map((name) => (
+          <button
+            key={name}
+            role="tab"
+            aria-selected={tab === name}
+            onClick={() => setTab(name)}
+            className={`px-4 py-2 text-sm ${tab === name ? "border-b-2 border-accent font-semibold text-text" : "text-text-secondary hover:text-text"}`}
+          >
+            {name === "live" ? "Live" : "Evaluation"}
+          </button>
+        ))}
+      </div>
+
+      {tab === "evaluation" && <EvaluationPanel runId={runId} />}
+
+      {tab === "live" && (
+        <>
       <MetricChart metrics={stream.metrics} theme={theme} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -314,6 +333,131 @@ export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
           ))}
         </ul>
       </div>
+        </>
+      )}
     </section>
+  );
+}
+
+
+interface EvalReport {
+  task: string;
+  accuracy?: number;
+  rmse?: number;
+  classes?: number[];
+  confusion_matrix?: number[][];
+  per_class?: { class_id: number; support: number; precision: number; recall: number; f1: number }[];
+  samples?: number;
+}
+
+function EvaluationPanel({ runId }: { runId: string }) {
+  const [report, setReport] = useState<EvalReport | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    apiFetch<EvalReport>(`/api/v1/runs/${runId}/evaluation`)
+      .then((body) => {
+        if (!disposed) setReport(body);
+      })
+      .catch((exc) => {
+        if (!disposed) setError(exc instanceof Error ? exc.message : "No evaluation yet.");
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [runId]);
+
+  if (error && !report) {
+    return (
+      <div className="rounded-lg border border-dashed border-border bg-surface p-8 text-center text-sm text-text-secondary">
+        {error}
+      </div>
+    );
+  }
+  if (!report) {
+    return (
+      <div className="h-32 animate-pulse rounded-lg border border-border bg-surface" aria-label="Loading evaluation" />
+    );
+  }
+
+  const matrix = report.confusion_matrix;
+  const classes = report.classes ?? [];
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        {report.accuracy !== undefined && (
+          <StatTile label="Accuracy" value={report.accuracy.toFixed(4)} />
+        )}
+        {report.rmse !== undefined && (
+          <StatTile label="RMSE" value={report.rmse.toFixed(4)} />
+        )}
+        <StatTile label="Samples" value={String(report.samples ?? "—")} />
+      </div>
+
+      {matrix && classes.length > 0 && (
+        <div className="rounded-lg border border-border bg-surface p-4">
+          <h3 className="mb-2 text-sm font-semibold">Confusion matrix</h3>
+          <div className="overflow-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr>
+                  <th className="border-b border-border p-1 text-left text-text-secondary">class \ predicted</th>
+                  {classes.map((c) => (
+                    <th key={c} className="border-b border-border p-1 text-right font-mono">{c}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {matrix.map((row, i) => (
+                  <tr key={i}>
+                    <th className="border-b border-border p-1 text-left font-mono text-text-secondary">{classes[i]}</th>
+                    {row.map((value, j) => (
+                      <td
+                        key={j}
+                        className={`border-b border-border p-1 text-right font-mono ${
+                          i === j ? "bg-accent/10 font-semibold" : value > 0 ? "text-text" : "text-text-secondary"
+                        }`}
+                      >
+                        {value}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {report.per_class && report.per_class.length > 0 && (
+        <div className="rounded-lg border border-border bg-surface p-4">
+          <h3 className="mb-2 text-sm font-semibold">Per-class metrics</h3>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-text-secondary">
+                <th className="p-1 text-left">Class</th>
+                <th className="p-1 text-right">Support</th>
+                <th className="p-1 text-right">Precision</th>
+                <th className="p-1 text-right">Recall</th>
+                <th className="p-1 text-right">F1</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.per_class.map((row) => (
+                <tr key={row.class_id}>
+                  <td className="border-b border-border p-1 font-mono">{row.class_id}</td>
+                  <td className="border-b border-border p-1 text-right font-mono">{row.support}</td>
+                  <td className="border-b border-border p-1 text-right font-mono">{row.precision.toFixed(4)}</td>
+                  <td className="border-b border-border p-1 text-right font-mono">{row.recall.toFixed(4)}</td>
+                  <td className="border-b border-border p-1 text-right font-mono">{row.f1.toFixed(4)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }

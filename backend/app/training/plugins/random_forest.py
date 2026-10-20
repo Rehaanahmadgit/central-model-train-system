@@ -161,6 +161,7 @@ class RandomForestTrainer(TrainerPlugin):
             train_metric = float(math.sqrt(mean_squared_error(y_train, train_pred)))
             val_metric = float(math.sqrt(mean_squared_error(y_val, val_pred)))
             metric_name = "rmse"
+        self._best_metric = val_metric
         ctx.emit_metric(f"train/{metric_name}", train_metric, 1, 1, "train")
         ctx.emit_metric(f"val/{metric_name}", val_metric, 1, 1, "val")
         ctx.emit_log(

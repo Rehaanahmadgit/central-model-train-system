@@ -114,8 +114,11 @@ class CNNTrainer(TrainerPlugin):
         self._criterion = nn.CrossEntropyLoss()
         self._start_epoch = 1
         self._best_accuracy = -1.0
-        self._patience = int(ctx.config.get("patience", 3) or 3)
-        self._min_delta = float(ctx.config.get("min_delta", 0.0) or 0.0)
+        self._best_epoch = 0
+        patience_raw = ctx.config.get("patience", 3)
+        min_delta_raw = ctx.config.get("min_delta", 0.0)
+        self._patience = int(patience_raw) if patience_raw is not None else 3
+        self._min_delta = float(min_delta_raw) if min_delta_raw is not None else 0.0
         self._epochs_since_best = 0
         ctx.emit_log(
             "INFO",
@@ -124,6 +127,7 @@ class CNNTrainer(TrainerPlugin):
         )
 
     def train(self, ctx: RunContext) -> TrainResult:
+        epoch = self._start_epoch - 1  # stays defined even if the range is empty (b)
         for epoch in range(self._start_epoch, self._epochs + 1):
             if ctx.should_stop():
                 break
@@ -169,6 +173,7 @@ class CNNTrainer(TrainerPlugin):
             self._save(ctx, epoch, is_best=improved)
             if improved:
                 self._best_accuracy = val_accuracy
+                self._best_epoch = epoch
                 self._epochs_since_best = 0
             else:
                 self._epochs_since_best += 1
@@ -182,11 +187,72 @@ class CNNTrainer(TrainerPlugin):
             best={
                 "metric": "val/accuracy",
                 "value": round(max(self._best_accuracy, 0.0), 4),
-                "epoch": self._start_epoch - 1,
+                "epoch": self._best_epoch,
             },
             epochs=epoch,
             note=f"val/accuracy={max(self._best_accuracy, 0.0):.4f}",
         )
+
+    def evaluate(self, ctx: RunContext) -> dict[str, Any]:
+        """Classification evaluation: confusion matrix + per-class metrics [doc 05 §5]."""
+        self._model.eval()
+        all_targets: list[int] = []
+        all_preds: list[int] = []
+        with torch.no_grad():
+            for batch in _batches(self._val_samples, self._batch_size):
+                tensors = []
+                targets = []
+                for path, label, _split in batch:
+                    tensor = self._load(ctx.dataset_root / path)
+                    if tensor is None:
+                        continue
+                    tensors.append(tensor)
+                    targets.append(label)
+                if not tensors:
+                    continue
+                x = torch.stack(tensors).to(self._device)
+                logits = self._model(x)
+                all_preds.extend(logits.argmax(dim=1).tolist())
+                all_targets.extend(targets)
+        if not all_targets:
+            return {"task": "image_classification", "accuracy": 0.0, "classes": [], "per_class": []}
+
+        classes = sorted(set(all_targets) | set(all_preds))
+        # Confusion matrix is indexed by position, not raw class id, because
+        # a tiny val split may contain non-contiguous ids (e.g. only class 1).
+        class_index = {class_id: index for index, class_id in enumerate(classes)}
+        matrix = [[0] * len(classes) for _ in classes]
+        for target, pred in zip(all_targets, all_preds, strict=False):
+            matrix[class_index[target]][class_index[pred]] += 1
+        correct = sum(matrix[i][i] for i in range(len(classes)))
+        accuracy = correct / len(all_targets)
+
+        per_class: list[dict[str, Any]] = []
+        for position, class_id in enumerate(classes):
+            tp = matrix[position][position]
+            fn = sum(matrix[position]) - tp
+            fp = sum(row[position] for row in matrix) - tp
+            precision = tp / (tp + fp) if tp + fp else 0.0
+            recall = tp / (tp + fn) if tp + fn else 0.0
+            f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+            per_class.append(
+                {
+                    "class_id": class_id,
+                    "support": sum(matrix[position]),
+                    "precision": round(precision, 4),
+                    "recall": round(recall, 4),
+                    "f1": round(f1, 4),
+                }
+            )
+        ctx.emit_log("INFO", f"evaluation: accuracy={accuracy:.4f} over {len(all_targets)} samples")
+        return {
+            "task": "image_classification",
+            "accuracy": round(accuracy, 4),
+            "classes": classes,
+            "confusion_matrix": matrix,
+            "per_class": per_class,
+            "samples": len(all_targets),
+        }
 
     # -- helpers ------------------------------------------------------------
 
@@ -250,6 +316,7 @@ class CNNTrainer(TrainerPlugin):
             "model_state": self._model.state_dict(),
             "optimizer_state": self._optimizer.state_dict(),
             "best_accuracy": self._best_accuracy,
+            "best_epoch": self._best_epoch,
         }
         torch.save(payload, last)
         ctx.save_checkpoint(last, is_best=False, metrics={"epoch": epoch})
@@ -266,6 +333,7 @@ class CNNTrainer(TrainerPlugin):
             self._optimizer.load_state_dict(payload["optimizer_state"])
             self._start_epoch = int(payload.get("epoch", 0)) + 1
             self._best_accuracy = float(payload.get("best_accuracy", -1.0))
+            self._best_epoch = int(payload.get("best_epoch", 0))
             ctx.emit_log(
                 "INFO",
                 f"resumed from {checkpoint_path.name} at epoch {self._start_epoch}",

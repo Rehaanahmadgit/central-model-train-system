@@ -117,6 +117,14 @@ def _run(record: dict[str, Any], home: Path, run_id: str) -> int:
         emit("result", {"state": "stopped", "best": result.best})
         return 0
     evaluation: dict[str, Any] = plugin.evaluate(ctx) or {}
+    if evaluation:
+        from app.storage.atomic import atomic_write_json
+
+        ctx.output_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(
+            ctx.output_dir / "evaluation.json",
+            {"schema_version": 1, "model_family": model_family, **evaluation},
+        )
     emit("result", {"state": "completed", "best": result.best, "evaluation": evaluation})
     emit("state", {"from": "running", "to": "completed"})
     return 0
