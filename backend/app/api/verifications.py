@@ -8,7 +8,11 @@ from fastapi import APIRouter, Request
 from app.core.config import Settings
 from app.core.errors import ApiError
 from app.realtime.broadcaster import EventBroadcaster
-from app.schemas.verifications import VerificationCreate, VerificationOut
+from app.schemas.verifications import (
+    VerificationCreate,
+    VerificationOut,
+    VerificationStarted,
+)
 from app.services import verifications
 
 router = APIRouter(prefix="/verifications", tags=["verifications"])
@@ -28,7 +32,7 @@ def _check_ver_id(verification_id: str) -> str:
     return verification_id
 
 
-@router.post("", response_model=VerificationOut, status_code=202)
+@router.post("", response_model=VerificationStarted, status_code=202)
 async def create(body: VerificationCreate, request: Request) -> dict[str, Any]:
     if not DATASET_HASH_PATTERN.match(body.dataset_hash):
         raise ApiError(400, "INVALID_ID", "dataset id must be a 64-char sha256 hex string")
@@ -46,7 +50,7 @@ async def create(body: VerificationCreate, request: Request) -> dict[str, Any]:
     )
 
 
-@router.get("/{verification_id}")
+@router.get("/{verification_id}", response_model=VerificationOut)
 def get(verification_id: str, request: Request) -> dict[str, Any]:
     return verifications.get_verification(
         _settings(request).home, _check_ver_id(verification_id)

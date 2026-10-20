@@ -29,6 +29,17 @@ FORMAT_TO_TASK: dict[str, str] = {
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
+SPLIT_DIR_NAMES = {
+    "train",
+    "training",
+    "val",
+    "valid",
+    "validation",
+    "test",
+    "testing",
+    "eval",
+}
+
 
 def detect_format(root: Path) -> tuple[str | None, str]:
     """Detect the normalized format and a human-readable reason [doc 06 §5]."""
@@ -72,7 +83,13 @@ class FormatSupportedCheck(Check):
     severity = "error"
 
     def run(self, ctx: VerificationContext) -> CheckResult:
-        detected_format, reason = detect_format(ctx.dataset_root)
+        # The runner computes this once for the manifest [doc 06 §2 step 2];
+        # direct check tests fall back to detecting here.
+        if "format" in ctx.facts:
+            detected_format = ctx.facts["format"]
+            reason = str(ctx.facts.get("format_reason", ""))
+        else:
+            detected_format, reason = detect_format(ctx.dataset_root)
         if detected_format is None:
             return CheckResult(
                 name=self.name,

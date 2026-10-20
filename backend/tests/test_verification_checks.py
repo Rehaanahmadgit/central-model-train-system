@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from fixtures.make_datasets import build_classification, build_yolo, materialize
 from verification_fixtures import make_folder_dataset, make_yolo_dataset
 
 from app.verification.checks.archive_integrity import ArchiveIntegrityCheck
@@ -153,8 +154,36 @@ def test_pipeline_dependency_skip_on_failed_format(tmp_path: Path) -> None:
     assert statuses["class_distribution"] == "skipped"
 
 
-def test_pipeline_passes_good_yolo(tmp_path: Path) -> None:
-    raw = make_yolo_dataset(tmp_path)
+EXPECTED_CHECKS = [
+    "archive_integrity",
+    "format_supported",
+    "required_files_present",
+    "file_extensions",
+    "split_presence",
+    "corrupt_files",
+    "label_file_pairing",
+    "label_validity",
+    "empty_labels",
+    "duplicate_files",
+    "leakage_between_splits",
+    "class_names_consistent",
+    "num_classes",
+    "class_distribution",
+    "min_samples_per_class",
+    "dataset_size",
+    "image_resolution_stats",
+    "object_size_stats",
+    "color_mode",
+    "tabular_quality",
+    "task_model_match",
+    "input_requirements",
+    "resource_estimate",
+]
+
+
+def test_pipeline_runs_every_documented_check(tmp_path: Path) -> None:
+    """Full doc 06 §4 pipeline; a good YOLO set trains but warns about hardware."""
+    raw = materialize(tmp_path / "raw", build_yolo())
     outcome = run_pipeline(
         raw,
         "a" * 64,
@@ -164,12 +193,52 @@ def test_pipeline_passes_good_yolo(tmp_path: Path) -> None:
         check_timeout_seconds=30,
         progress=lambda event: None,
     )
+    assert [check["name"] for check in outcome["checks"]] == EXPECTED_CHECKS
+    # No GPU on the laptop → honest warning, still trainable [doc 14 §3.3].
+    assert outcome["status"] == "passed_with_warnings"
+    assert outcome["can_train"] is True
+    statuses = {check["name"]: check["status"] for check in outcome["checks"]}
+    assert statuses["corrupt_files"] == "pass"
+    assert statuses["resource_estimate"] == "warn"
+
+
+def test_pipeline_clean_pass_with_splits(tmp_path: Path) -> None:
+    """Good classification data with train/val splits passes with zero warnings."""
+    raw = materialize(
+        tmp_path / "raw", build_classification(per_class=160, split=True, size=(64, 64))
+    )
+    outcome = run_pipeline(
+        raw,
+        "a" * 64,
+        "resnet",
+        None,
+        sample_cap=500,
+        check_timeout_seconds=60,
+        progress=lambda event: None,
+    )
     assert outcome["status"] == "passed"
     assert outcome["can_train"] is True
-    assert [check["name"] for check in outcome["checks"]] == [
-        "archive_integrity",
-        "format_supported",
-        "corrupt_files",
-        "label_validity",
-        "class_distribution",
-    ]
+    assert outcome["derived"]["task_type"] == "image_classification"
+    assert outcome["derived"]["num_classes"] == 2
+    assert set(outcome["derived"]["num_samples"]) >= {"train", "val"}
+
+
+def test_pipeline_derived_facts_and_manifest(tmp_path: Path) -> None:
+    raw = materialize(tmp_path / "raw", build_yolo())
+    outcome = run_pipeline(
+        raw,
+        "a" * 64,
+        "rtdetr",
+        None,
+        sample_cap=100,
+        check_timeout_seconds=30,
+        progress=lambda event: None,
+    )
+    derived = outcome["derived"]
+    assert derived["format"] == "yolo"
+    assert derived["task_type"] == "object_detection"
+    assert "bounding boxes" in str(derived["task_detection_reason"])
+    assert derived["num_images"] == len(outcome["manifest_rows"])
+    assert derived["recommended_hparams"]["batch_size"] >= 1
+    assert derived["recommended_checkpoints"] == []
+    assert derived["checkpoint_catalog_configured"] is False

@@ -18,10 +18,34 @@ export interface CheckItem {
   samples: string[];
 }
 
+export interface Derived {
+  task_type?: string | null;
+  task_detection_reason?: string | null;
+  format?: string | null;
+  num_classes?: number;
+  classes?: string[];
+  class_counts?: Record<string, number>;
+  num_images?: number;
+  num_samples?: Record<string, number>;
+  image_stats?: {
+    min_wh?: [number, number];
+    max_wh?: [number, number];
+    median_w?: number | null;
+    median_h?: number | null;
+    color_modes?: Record<string, number>;
+  };
+  object_stats?: Record<string, unknown>;
+  recommended_hparams?: Record<string, unknown>;
+  recommended_checkpoints?: Array<Record<string, unknown>>;
+  checkpoint_catalog_configured?: boolean;
+}
+
 export interface VerificationStream {
   status: "connecting" | "live" | "closed";
   verificationStatus: string | null;
   checks: CheckItem[];
+  derived: Derived | null;
+  cached: boolean;
 }
 
 const MAX_RECONNECT_DELAY_MS = 15_000;
@@ -36,21 +60,37 @@ export function useVerificationStream(verificationId: string | null): Verificati
     status: verificationId ? "connecting" : "closed",
     verificationStatus: null,
     checks: [],
+    derived: null,
+    cached: false,
   });
 
   const buffer = useRef<VerificationStream>({
     status: "connecting",
     verificationStatus: null,
     checks: [],
+    derived: null,
+    cached: false,
   });
   const dirty = useRef(false);
 
   useEffect(() => {
     if (!verificationId) {
-      setState({ status: "closed", verificationStatus: null, checks: [] });
+      setState({
+        status: "closed",
+        verificationStatus: null,
+        checks: [],
+        derived: null,
+        cached: false,
+      });
       return;
     }
-    buffer.current = { status: "connecting", verificationStatus: null, checks: [] };
+    buffer.current = {
+      status: "connecting",
+      verificationStatus: null,
+      checks: [],
+      derived: null,
+      cached: false,
+    };
     dirty.current = true;
 
     let socket: WebSocket | null = null;
@@ -100,6 +140,13 @@ export function useVerificationStream(verificationId: string | null): Verificati
         const checks = data.checks;
         if (Array.isArray(checks)) {
           buffer.current.checks = checks as CheckItem[];
+        }
+        const derivedFacts = verification?.derived;
+        if (derivedFacts && typeof derivedFacts === "object") {
+          buffer.current.derived = derivedFacts as Derived;
+        }
+        if (typeof verification?.cached === "boolean") {
+          buffer.current.cached = verification.cached;
         }
       } else if (message.type === "check_started") {
         upsertCheck(String(data.name ?? "check"), { status: "running" });

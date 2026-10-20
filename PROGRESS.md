@@ -28,7 +28,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [x] S4 — Event broadcaster + `events.jsonl` + WebSocket (snapshot, deltas, `last_seq` resume) + fake publisher + live chart. **DONE 2026-10-17.** ruff ✓ mypy ✓ 126 tests ✓ frontend build ✓ live WS smoke ✓ (snapshot → replay → live metrics, monotonic seq). Phase 0 M0 demo: `TRAINHUB_DEMO_FAKE_RUN=true` streams hello-world metrics.
 - [x] S5 — Verification runner + 5 core checks + API + WS + streaming checklist UI. **DONE 2026-10-20.** 8/8 tests pass (hang fixed in S5.1); audit lines added.
 - [x] S5.1 — `make verify` + FAST-02 test tiers/markers + WS close fix + verification audit lines + Python 3.12 unification + git init/commit. **DONE 2026-10-20.** `make verify` green: ruff ✓ mypy ✓ 150 fast tests ✓ frontend build ✓.
-- [ ] S6 — Verification cache + normalized manifest + remaining checks + task detection + recommendations.
+- [x] S6 — Verification cache + normalized manifest + remaining checks + task detection + recommendations. **DONE 2026-10-20.** 23 checks (doc 06 §4), manifest parquet, `report.json` derived facts, `cache/verif/{key}.json` pointer with cache hit on POST, task detection with reason, hparam + checkpoint recommendations, summary cards + warning acknowledgement in the UI, `tests/fixtures/make_datasets.py` spec table (18 datasets, all outcomes asserted). `make verify` green: **185 tests in 14.44 s**.
 
 - [ ] S7 — Checkpoint catalog + resolver + selection v1.
 - [ ] S8 — Plugin base + first trainer plugin + Job Manager + subprocess supervision + telemetry + GPU slot locks.
@@ -58,8 +58,8 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [x] FAST-04 no Docker builds mid-slice — image build NOT RUN.
 - [x] FAST-05/06 file and reply discipline — state files updated, no spec-index repeat.
 
-## MVP acceptance (doc 01 §10) — all open
-1. [ ] Upload → model → verification → pass/fail details.
+## MVP acceptance (doc 01 §10)
+1. [x] Upload → model → verification → pass/fail details (S3+S5+S6; live smoke 2026-10-20).
 2. [ ] Pass → Start Training → job starts.
 3. [ ] Checkpoint downloaded once, reused (log + `index.json`).
 4. [ ] Live loss/accuracy + logs; refresh restores state.
@@ -67,6 +67,12 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 6. [ ] Killed trainer subprocess → `failed` + reason; API up.
 7. [ ] Restart mid-training → `interrupted`, resume from `last.ckpt`.
 8. [ ] Privacy grep: zero emails/IPs/user-agents in workspace + logs.
+
+## S6 detail
+- Pipeline: 23 checks in doc 06 §2 order; dependency skip chaining; per-check timeout.
+- Artifacts per dataset/verification: `manifest.parquet` (11-column Arrow schema), `report.json`, `checks.jsonl`, `progress.jsonl`, `cache/verif/{sha256(dataset_hash|model_family|verifier_version)}.json`.
+- Checkpoint recommendations need a catalog; without `checkpoints/catalog.yaml` the API returns `[]` + `checkpoint_catalog_configured: false` (catalog ships in S7) — no invented ids.
+- `app/samples/datasets.py` is importable from app code so DIST-11 can reuse it; `tests/fixtures/make_datasets.py` re-exports it.
 
 ## Non-goal guards (checked every turn)
 - No database introduced. No client/user info introduced.

@@ -11,7 +11,7 @@ from app.verification.context import CheckResult, VerificationContext
 class ClassDistributionCheck(Check):
     name = "class_distribution"
     severity = "warn"
-    depends_on = ["format_supported"]
+    depends_on = ["format_supported", "required_files_present"]
 
     def run(self, ctx: VerificationContext) -> CheckResult:
         counts = ctx.facts.get("class_counts") or {}

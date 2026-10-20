@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from fixtures.make_datasets import build_yolo, to_zip
 from helpers import upload_dataset
 from starlette.websockets import WebSocketDisconnect
 from verification_fixtures import _png_bytes  # type: ignore[attr-defined]
@@ -23,18 +24,7 @@ def _zip_dataset(entries: dict[str, bytes]) -> bytes:
 
 
 def _good_yolo_zip() -> bytes:
-    entries: dict[str, bytes] = {
-        "images/img0.png": _png_bytes((255, 0, 0)),
-        "images/img1.png": _png_bytes((255, 0, 0)),
-        "images/img2.png": _png_bytes((255, 0, 0)),
-        "images/img3.png": _png_bytes((0, 255, 0)),
-        "labels/img0.txt": b"0 0.25 0.25 0.5 0.5\n",
-        "labels/img1.txt": b"0 0.25 0.25 0.5 0.5\n",
-        "labels/img2.txt": b"0 0.25 0.25 0.5 0.5\n",
-        "labels/img3.txt": b"1 0.25 0.25 0.5 0.5\n",
-        "data.yaml": b"names:\n  - cat\n  - dog\n",
-    }
-    return _zip_dataset(entries)
+    return to_zip(build_yolo())
 
 
 def _wait_for_verification(client: TestClient, verification_id: str, timeout: float = 15.0) -> dict:
@@ -58,30 +48,44 @@ def test_verification_full_flow_passes(client: TestClient, home: Path) -> None:
     assert response.json()["status"] == "running"
 
     body = _wait_for_verification(client, verification_id)
-    assert body["status"] == "passed"
+    # A good dataset on a CPU-only laptop warns about hardware/size, not data.
+    assert body["status"] == "passed_with_warnings"
     assert body["can_train"] is True
     assert body["cached"] is False
     assert body["verifier_version"] == "1.0.0"
     assert body["finished_at"] is not None
-    assert [check["name"] for check in body["checks"]] == [
-        "archive_integrity",
-        "format_supported",
-        "corrupt_files",
-        "label_validity",
-        "class_distribution",
-    ]
+    names = [check["name"] for check in body["checks"]]
+    assert len(names) == 23
+    assert names[0] == "archive_integrity"
+    assert names[-1] == "resource_estimate"
+    assert {"label_file_pairing", "leakage_between_splits", "min_samples_per_class"} <= set(names)
+
+    # Derived facts + normalized manifest are cached once [doc 06 §6].
+    derived = body["derived"]
+    assert derived["task_type"] == "object_detection"
+    assert derived["format"] == "yolo"
+    assert derived["num_images"] == 24
+    assert derived["task_detection_reason"]
+    assert derived["recommended_hparams"]["imgsz"] == 32
+    expected_manifest = f"datasets/{completed['dataset_hash']}/manifest.parquet"
+    assert derived["split_manifest_path"] == expected_manifest
+    assert (home / "datasets" / completed["dataset_hash"] / "manifest.parquet").is_file()
+    assert (home / "verifications" / verification_id / "report.json").is_file()
+
     checks_file = home / "verifications" / verification_id / "checks.jsonl"
     records = list(read_jsonl(checks_file))
-    assert len(records) == 5
-    assert [record["seq"] for record in records] == [1, 2, 3, 4, 5]
+    assert len(records) == 23
+    assert [record["seq"] for record in records] == list(range(1, 24))
 
 
 def test_verification_fails_on_corrupt_dataset(client: TestClient) -> None:
     entries = {
         "images/img0.png": b"not an image",
         "images/img1.png": _png_bytes((255, 0, 0)),
+        "images/img2.png": _png_bytes((0, 255, 0)),
         "labels/img0.txt": b"0 0.25 0.25 0.5 0.5\n",
         "labels/img1.txt": b"0 0.25 0.25 0.5 0.5\n",
+        "labels/img2.txt": b"1 0.25 0.25 0.5 0.5\n",
         "data.yaml": b"names:\n  - cat\n  - dog\n",
     }
     completed = upload_dataset(client, "bad.zip", _zip_dataset(entries))
@@ -99,11 +103,13 @@ def test_verification_fails_on_corrupt_dataset(client: TestClient) -> None:
 
 def test_verification_warns_on_imbalance(client: TestClient) -> None:
     entries: dict[str, bytes] = {"data.yaml": b"names:\n  - cat\n  - dog\n"}
-    for index in range(21):
+    for index in range(41):
         entries[f"images/img{index}.png"] = _png_bytes((255, 0, 0))
         entries[f"labels/img{index}.txt"] = b"0 0.25 0.25 0.5 0.5\n"
     entries["images/last.png"] = _png_bytes((0, 255, 0))
     entries["labels/last.txt"] = b"1 0.25 0.25 0.5 0.5\n"
+    entries["images/last2.png"] = _png_bytes((0, 0, 255))
+    entries["labels/last2.txt"] = b"1 0.25 0.25 0.5 0.5\n"
     completed = upload_dataset(client, "imbalanced.zip", _zip_dataset(entries))
     verification_id = client.post(
         "/api/v1/verifications",
@@ -142,7 +148,7 @@ def test_verification_writes_audit_lines(client: TestClient, home: Path) -> None
         json={"dataset_hash": completed["dataset_hash"], "model_family": "rtdetr"},
     ).json()["id"]
     body = _wait_for_verification(client, verification_id)
-    assert body["status"] == "passed"
+    assert body["status"] == "passed_with_warnings"
     records = [
         record
         for path in sorted((home / "audit").glob("audit-*.jsonl"))
@@ -162,7 +168,7 @@ def test_verification_checks_endpoint(client: TestClient) -> None:
     ).json()["id"]
     _wait_for_verification(client, verification_id)
     body = client.get(f"/api/v1/verifications/{verification_id}/checks").json()
-    assert len(body["checks"]) == 5
+    assert len(body["checks"]) == 23
 
 
 def test_verification_ws_streams_checks(client: TestClient) -> None:
@@ -182,16 +188,15 @@ def test_verification_ws_streams_checks(client: TestClient) -> None:
             types.add(message["type"])
             if message["type"] == "check":
                 names.add(message["data"]["name"])
-            if message["type"] == "state" and message["data"]["to"] == "passed":
+            if message["type"] == "state" and message["data"]["to"] in (
+                "passed",
+                "passed_with_warnings",
+                "failed",
+            ):
                 break
         assert "check_started" in types
-        assert names == {
-            "archive_integrity",
-            "format_supported",
-            "corrupt_files",
-            "label_validity",
-            "class_distribution",
-        }
+        assert {"archive_integrity", "format_supported", "corrupt_files", "label_validity"} <= names
+        assert len(names) == 23
 
 
 def test_verification_ws_on_finished_stream_closes(client: TestClient) -> None:
@@ -204,6 +209,6 @@ def test_verification_ws_on_finished_stream_closes(client: TestClient) -> None:
     with client.websocket_connect(f"/ws/verifications/{verification_id}") as websocket:
         snapshot = websocket.receive_json()
         assert snapshot["type"] == "snapshot"
-        assert snapshot["data"]["verification"]["status"] == "passed"
+        assert snapshot["data"]["verification"]["status"] == "passed_with_warnings"
         with pytest.raises(WebSocketDisconnect):
             websocket.receive_json()

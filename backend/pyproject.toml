@@ -13,6 +13,7 @@ dependencies = [
     "pillow==13.0.0",
     "pydantic==2.14.1",
     "pydantic-settings==2.16.0",
+    "pyarrow==26.0.0",
     "pyyaml==6.0.3",
     "uvicorn[standard]==0.54.0",
 ]

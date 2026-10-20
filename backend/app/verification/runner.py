@@ -1,9 +1,13 @@
 """Pipeline runner [doc 06 §2].
 
-Runs checks in dependency order with per-check timeouts [doc 06 §7];
-a failing error-severity check short-circuits its dependents (`skipped`).
-Progress is reported through the provided callback.
+Order: format detection → manifest build → task detection → checks in
+dependency order → derived facts + recommendations. Everything expensive is
+computed once here and cached for training [doc 06 §6].
+
+A failing error-severity check short-circuits its dependents (`skipped`).
 """
+
+from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -11,31 +15,84 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any
 
+from app.core.device import DeviceInfo, resolve_device
 from app.verification import VERIFIER_VERSION
 from app.verification.checks.archive_integrity import ArchiveIntegrityCheck, TreeLimits
 from app.verification.checks.base import Check, skipped_result
 from app.verification.checks.class_distribution import ClassDistributionCheck
+from app.verification.checks.compat import (
+    InputRequirementsCheck,
+    ResourceEstimateCheck,
+    TaskModelMatchCheck,
+)
 from app.verification.checks.content import CorruptFilesCheck, LabelValidityCheck
-from app.verification.checks.format_supported import FormatSupportedCheck
+from app.verification.checks.format_supported import FormatSupportedCheck, detect_format
+from app.verification.checks.quality import (
+    ClassNamesConsistentCheck,
+    DuplicateFilesCheck,
+    EmptyLabelsCheck,
+    LabelFilePairingCheck,
+    LeakageBetweenSplitsCheck,
+)
+from app.verification.checks.stats import (
+    ColorModeCheck,
+    DatasetSizeCheck,
+    ImageResolutionStatsCheck,
+    MinSamplesPerClassCheck,
+    NumClassesCheck,
+    ObjectSizeStatsCheck,
+    TabularQualityCheck,
+)
+from app.verification.checks.structural import (
+    FileExtensionsCheck,
+    RequiredFilesPresentCheck,
+    SplitPresenceCheck,
+)
 from app.verification.context import CheckResult, VerificationContext
+from app.verification.manifest import ManifestSummary, build_manifest
+from app.verification.recommend import (
+    load_catalog,
+    rank_checkpoints,
+    recommend_hparams,
+    size_bucket,
+)
+from app.verification.tasks import detect_task
 
 Progress = Callable[[dict[str, Any]], None]
 
+REPORT_SCHEMA_VERSION = 1
+
 
 def build_checks(limits: TreeLimits | None = None) -> list[Check]:
-    # Pipeline order [doc 06 §2]: structural → format → content → statistical.
+    """Pipeline order [doc 06 §2]: structural → content → statistical → compatibility."""
     return [
         ArchiveIntegrityCheck(limits),
         FormatSupportedCheck(),
+        RequiredFilesPresentCheck(),
+        FileExtensionsCheck(),
+        SplitPresenceCheck(),
         CorruptFilesCheck(),
+        LabelFilePairingCheck(),
         LabelValidityCheck(),
+        EmptyLabelsCheck(),
+        DuplicateFilesCheck(),
+        LeakageBetweenSplitsCheck(),
+        ClassNamesConsistentCheck(),
+        NumClassesCheck(),
         ClassDistributionCheck(),
+        MinSamplesPerClassCheck(),
+        DatasetSizeCheck(),
+        ImageResolutionStatsCheck(),
+        ObjectSizeStatsCheck(),
+        ColorModeCheck(),
+        TabularQualityCheck(),
+        TaskModelMatchCheck(),
+        InputRequirementsCheck(),
+        ResourceEstimateCheck(),
     ]
 
 
-def _execute_check(
-    check: Check, ctx: VerificationContext, timeout_seconds: float
-) -> CheckResult:
+def _execute_check(check: Check, ctx: VerificationContext, timeout_seconds: float) -> CheckResult:
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(check.run, ctx)
         try:
@@ -50,6 +107,66 @@ def _execute_check(
             )
 
 
+def _prepare(ctx: VerificationContext, home: Path | None) -> None:
+    """Format → manifest → task, computed once and shared with every check."""
+    detected_format, reason = detect_format(ctx.dataset_root)
+    ctx.facts["format"] = detected_format
+    ctx.facts["format_reason"] = reason
+    summary = build_manifest(ctx.dataset_root, detected_format, sample_cap=ctx.sample_cap)
+    ctx.facts["manifest"] = summary
+    task_type, task_reason = detect_task(ctx.dataset_root, detected_format, summary)
+    ctx.facts["task_type"] = task_type
+    ctx.facts["task_detection_reason"] = task_reason
+    if summary.class_counts:
+        ctx.facts.setdefault("class_counts", dict(summary.class_counts))
+        ctx.facts.setdefault("class_names", list(summary.class_names))
+    ctx.facts["checkpoint_catalog_configured"] = bool(
+        home is not None and (home / "checkpoints" / "catalog.yaml").is_file()
+    )
+
+
+def _derived(
+    ctx: VerificationContext, summary: ManifestSummary, device: DeviceInfo
+) -> dict[str, Any]:
+    """Derived facts cached for training [doc 06 §6]."""
+    total = sum(summary.class_counts.values())
+    hparams = recommend_hparams(
+        summary,
+        task_type=ctx.facts.get("task_type"),
+        model_family=ctx.model_family,
+        device=device,
+    )
+    catalog_path = ctx.facts.get("catalog_path")
+    catalog = load_catalog(Path(catalog_path)) if isinstance(catalog_path, str) else []
+    recommended = rank_checkpoints(
+        catalog,
+        task_type=ctx.facts.get("task_type"),
+        model_family=ctx.model_family,
+        bucket=size_bucket(total),
+        device=device,
+    )
+    return {
+        "task_type": ctx.facts.get("task_type"),
+        "task_detection_reason": ctx.facts.get("task_detection_reason"),
+        "format": ctx.facts.get("format"),
+        "num_classes": len(summary.class_names),
+        "classes": list(summary.class_names),
+        "class_counts": dict(summary.class_counts),
+        "class_to_id": dict(summary.class_to_id),
+        "num_images": len(summary.rows),
+        "num_samples": dict(summary.num_samples),
+        "image_stats": dict(summary.image_stats),
+        "object_stats": dict(summary.object_stats),
+        "tabular_schema": dict(summary.tabular_schema),
+        "split_manifest_path": None,
+        "recommended_hparams": hparams,
+        "recommended_checkpoints": recommended,
+        "checkpoint_catalog_configured": bool(ctx.facts.get("checkpoint_catalog_configured")),
+        "dataset_hash": ctx.dataset_hash,
+        "verifier_version": VERIFIER_VERSION,
+    }
+
+
 def run_pipeline(
     dataset_root: Path,
     dataset_hash: str,
@@ -60,8 +177,10 @@ def run_pipeline(
     check_timeout_seconds: float,
     progress: Progress,
     limits: TreeLimits | None = None,
+    home: Path | None = None,
+    device: DeviceInfo | None = None,
 ) -> dict[str, Any]:
-    """Run all checks; returns {status, can_train, checks}."""
+    """Run all checks; returns status, checks, derived facts and manifest rows."""
     ctx = VerificationContext(
         dataset_root=dataset_root,
         dataset_hash=dataset_hash,
@@ -70,6 +189,25 @@ def run_pipeline(
         verifier_version=VERIFIER_VERSION,
         sample_cap=sample_cap,
     )
+    if home is not None:
+        ctx.facts["catalog_path"] = str(home / "checkpoints" / "catalog.yaml")
+
+    progress({"type": "phase", "data": {"phase": "manifest_build", "status": "running"}})
+    _prepare(ctx, home)
+    summary = ctx.facts["manifest"]
+    assert isinstance(summary, ManifestSummary)
+    progress(
+        {
+            "type": "phase",
+            "data": {
+                "phase": "manifest_build",
+                "status": "done",
+                "files": len(summary.rows),
+                "task_type": ctx.facts.get("task_type"),
+            },
+        }
+    )
+
     failed_error_checks: set[str] = set()
     results: list[CheckResult] = []
     for check in build_checks(limits):
@@ -83,17 +221,19 @@ def run_pipeline(
             failed_error_checks.add(check.name)
         results.append(result)
         progress({"type": "check_finished", "data": result.as_dict()})
+
     status = "failed"
-    if not any(
-        result.status == "fail" and result.severity == "error" for result in results
-    ):
+    if not any(result.status == "fail" and result.severity == "error" for result in results):
         status = (
             "passed_with_warnings"
             if any(result.status == "warn" for result in results)
             else "passed"
         )
+    resolved_device = device or resolve_device("auto")
     return {
         "status": status,
         "can_train": status != "failed",
         "checks": [result.as_dict() for result in results],
+        "derived": _derived(ctx, summary, resolved_device),
+        "manifest_rows": summary.rows,
     }

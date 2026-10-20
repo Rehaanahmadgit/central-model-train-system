@@ -21,6 +21,7 @@ from app.storage.dataset import dataset_exists
 from app.storage.ids import new_verification_id
 from app.storage.jsonl import read_jsonl
 from app.verification import VERIFIER_VERSION
+from app.verification.cache import cache_key, lookup_cached
 from app.verification.checks.format_supported import MODEL_TASK_MAP
 from app.verification.worker import run_verification_worker
 
@@ -61,6 +62,18 @@ def create_verification(
             "UNKNOWN_MODEL_FAMILY",
             f"model family {model_family!r} is not known; supported: {sorted(MODEL_TASK_MAP)}",
         )
+    # Cache hit → return the stored report instead of recomputing (US-06) [doc 06 §2].
+    key = cache_key(dataset_hash, model_family, VERIFIER_VERSION)
+    cached = lookup_cached(home, key)
+    if cached is not None:
+        cached_id = str(cached.get("id"))
+        return {
+            "id": cached_id,
+            "status": str(cached.get("status")),
+            "cached": True,
+            "verifier_version": cached.get("verifier_version", VERIFIER_VERSION),
+        }
+
     verification_id = new_verification_id()
     directory = home / "verifications" / verification_id
     directory.mkdir(parents=True, exist_ok=False)
@@ -96,7 +109,12 @@ def create_verification(
         check_timeout_seconds=settings.verify_check_timeout_seconds,
     )
     asyncio.create_task(_monitor(home, verification_id, future, broadcaster))
-    return {"id": verification_id, "status": "running"}
+    return {
+        "id": verification_id,
+        "status": "running",
+        "cached": False,
+        "verifier_version": VERIFIER_VERSION,
+    }
 
 
 async def _monitor(
@@ -191,7 +209,25 @@ def get_verification(home: Path, verification_id: str) -> dict[str, Any]:
     checks = get_checks(home, verification_id)
     status = data.get("status")
     can_train = status not in ("running", "failed")
-    return {**data, "cached": False, "checks": checks, "can_train": can_train}
+    return {
+        **data,
+        "cached": bool(data.get("from_cache", False)),
+        "checks": checks,
+        "can_train": can_train,
+        "derived": get_report(home, verification_id).get("derived", {}),
+    }
+
+
+def get_report(home: Path, verification_id: str) -> dict[str, Any]:
+    """Derived facts cached by the worker [doc 06 §6]; empty until it finishes."""
+    path = home / "verifications" / verification_id / "report.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = read_json(path)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def get_checks(home: Path, verification_id: str) -> list[dict[str, Any]]:

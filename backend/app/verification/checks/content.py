@@ -8,7 +8,7 @@ import yaml
 from PIL import Image
 
 from app.verification.checks.base import Check
-from app.verification.checks.format_supported import IMAGE_EXTENSIONS
+from app.verification.checks.format_supported import IMAGE_EXTENSIONS, SPLIT_DIR_NAMES
 from app.verification.context import CheckResult, VerificationContext
 
 
@@ -29,7 +29,7 @@ class CorruptFilesCheck(Check):
 
     name = "corrupt_files"
     severity = "error"
-    depends_on = ["format_supported"]
+    depends_on = ["format_supported", "required_files_present"]
 
     def run(self, ctx: VerificationContext) -> CheckResult:
         images = [
@@ -83,7 +83,7 @@ class LabelValidityCheck(Check):
 
     name = "label_validity"
     severity = "error"
-    depends_on = ["format_supported"]
+    depends_on = ["format_supported", "required_files_present"]
 
     def run(self, ctx: VerificationContext) -> CheckResult:
         detected = ctx.facts.get("format")
@@ -186,11 +186,20 @@ class LabelValidityCheck(Check):
         )
 
     def _check_folder(self, ctx: VerificationContext) -> CheckResult:
-        class_names = sorted(
-            entry.name
-            for entry in ctx.dataset_root.iterdir()
-            if entry.is_dir() and any(entry.iterdir())
-        )
+        # Prefer manifest facts so split layouts (train/cat, val/cat) count once.
+        summary = ctx.facts.get("manifest")
+        if summary is not None and summary.rows:
+            class_names = list(summary.class_names)
+            class_counts: dict[str, int] = dict(summary.class_counts)
+        else:
+            class_counts = {}
+            for path in ctx.dataset_root.rglob("*"):
+                if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
+                    label = path.parent.name
+                    if label.lower() in SPLIT_DIR_NAMES:
+                        continue
+                    class_counts[label] = class_counts.get(label, 0) + 1
+            class_names = sorted(class_counts)
         if len(class_names) < 2:
             return CheckResult(
                 name=self.name,
@@ -203,10 +212,6 @@ class LabelValidityCheck(Check):
                 details={"classes": class_names},
                 fix_hint="Provide at least two non-empty class folders.",
             )
-        class_counts = {
-            name: sum(1 for entry in (ctx.dataset_root / name).iterdir() if entry.is_file())
-            for name in class_names
-        }
         ctx.facts["class_counts"] = class_counts
         ctx.facts["class_names"] = class_names
         return CheckResult(

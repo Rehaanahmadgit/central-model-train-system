@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import { CheckList } from "../components/CheckList";
-import { useVerificationStream } from "../hooks/useVerificationStream";
+import { SummaryCards } from "../components/SummaryCards";
+import {
+  useVerificationStream,
+  type CheckItem,
+  type Derived,
+} from "../hooks/useVerificationStream";
 
 interface DatasetMeta {
   hash: string;
@@ -11,6 +16,8 @@ interface DatasetMeta {
 interface VerificationStart {
   id: string;
   status: string;
+  cached?: boolean;
+  verifier_version?: string;
 }
 
 // Verification demo: pick a dataset, start verification, watch the streaming
@@ -21,7 +28,11 @@ export function VerifyDemo() {
   const [modelFamily, setModelFamily] = useState("rtdetr");
   const [verificationId, setVerificationId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
+  const [cachedHit, setCachedHit] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
   const stream = useVerificationStream(verificationId);
+  const [finalDerived, setFinalDerived] = useState<Derived | null>(null);
+  const [finalChecks, setFinalChecks] = useState<CheckItem[] | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -43,9 +54,32 @@ export function VerifyDemo() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The initial snapshot predates report.json, so refetch once the run ends to
+  // pick up the derived facts (task, stats, recommendations) [doc 05 §3].
+  useEffect(() => {
+    const status = stream.verificationStatus;
+    if (!verificationId || !status || status === "running") return;
+    let disposed = false;
+    fetch(`/api/v1/verifications/${verificationId}`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body: { derived?: Derived; checks?: CheckItem[] } | null) => {
+        if (disposed || !body) return;
+        if (body.derived) setFinalDerived(body.derived);
+        if (Array.isArray(body.checks)) setFinalChecks(body.checks);
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, [stream.verificationStatus, verificationId]);
+
   async function start(): Promise<void> {
     setStartError(null);
     setVerificationId(null);
+    setCachedHit(false);
+    setAcknowledged(false);
+    setFinalDerived(null);
+    setFinalChecks(null);
     const response = await fetch("/api/v1/verifications", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -59,6 +93,7 @@ export function VerifyDemo() {
       return;
     }
     const started = (await response.json()) as VerificationStart;
+    setCachedHit(Boolean(started.cached));
     setVerificationId(started.id);
   }
 
@@ -66,6 +101,9 @@ export function VerifyDemo() {
   const passed =
     stream.verificationStatus === "passed" || stream.verificationStatus === "passed_with_warnings";
   const failed = stream.verificationStatus === "failed";
+  const effectiveChecks = finalChecks ?? stream.checks;
+  const hasWarnings = effectiveChecks.some((check) => check.status === "warn");
+  const needsAck = passed && hasWarnings && !acknowledged;
 
   return (
     <section className="flex flex-col gap-6">
@@ -83,7 +121,22 @@ export function VerifyDemo() {
       {passed && (
         <p role="status" className="rounded-md border border-success bg-surface p-4 text-sm text-success">
           ✓ Dataset verified successfully
+          {cachedHit || stream.cached ? " (reused the cached report for this dataset)" : ""}
         </p>
+      )}
+      {passed && hasWarnings && (
+        <label className="flex items-start gap-3 rounded-md border border-warning bg-surface p-4 text-sm">
+          <input
+            type="checkbox"
+            checked={acknowledged}
+            onChange={(event) => setAcknowledged(event.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            I reviewed the {effectiveChecks.filter((check) => check.status === "warn").length}{" "}
+            warning(s) above and want to continue.
+          </span>
+        </label>
       )}
       {failed && (
         <p role="alert" className="rounded-md border border-danger bg-surface p-4 text-sm text-danger">
@@ -124,15 +177,22 @@ export function VerifyDemo() {
         {finished && (
           <button
             type="button"
-            disabled={!passed}
-            title={passed ? "Proceeds to configuration (slice 10)" : "Fix the failing checks first"}
+            disabled={!passed || needsAck}
+            title={
+              !passed
+                ? "Fix the failing checks first"
+                : needsAck
+                  ? "Acknowledge the warnings first"
+                  : "Proceeds to configuration (slice 10)"
+            }
             className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
           >
             Next →
           </button>
         )}
       </div>
-      <CheckList checks={stream.checks} />
+      <SummaryCards derived={finalDerived ?? stream.derived} />
+      <CheckList checks={finalChecks ?? stream.checks} />
     </section>
   );
 }
