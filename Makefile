@@ -6,7 +6,7 @@ PYTHON ?= backend/.venv/bin/python
 # Absolute path so `cd backend && $(PY_BACKEND) ...` works from the repo root.
 PY_BACKEND := $(abspath $(shell command -v $(PYTHON) 2>/dev/null || echo $(abspath $(PYTHON))))
 
-.PHONY: help verify verify-full test-fast test-full test-gpu check-python
+.PHONY: help verify verify-full test-fast test-full test-gpu e2e check-python
 
 help: ## List available targets
 	@echo "verify       lint + type-check + fast tests + frontend build  [doc 16 FAST-01]"
@@ -14,6 +14,7 @@ help: ## List available targets
 	@echo "test-fast    pytest, excluding slow and gpu tests             [doc 16 FAST-02]"
 	@echo "test-full    pytest, everything (milestone-end only)"
 	@echo "test-gpu     pytest -m gpu (GPU server only)                  [doc 14 §3.5]"
+	@echo "e2e          Playwright wizard smoke (needs backend on :8080)"
 
 verify: check-python ## The fast gate: ruff + mypy + fast tests + frontend build
 	cd backend && $(PY_BACKEND) -m ruff check app tests
@@ -35,6 +36,9 @@ test-full: check-python ## Full suite incl. slow tests; run at milestone end [do
 
 test-gpu: check-python ## GPU smoke tests; requires a CUDA server [doc 16 FAST-02]
 	cd backend && $(PY_BACKEND) -m pytest -m gpu
+
+e2e: ## Playwright wizard smoke test; backend must be running on :8080
+	npm --prefix frontend run e2e
 
 check-python:
 	@test -x $(PY_BACKEND) || { echo "backend interpreter '$(PY_BACKEND)' not found; use: make verify PYTHON=python3" >&2; exit 1; }

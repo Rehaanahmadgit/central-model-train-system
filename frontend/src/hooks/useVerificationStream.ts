@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { wsUrl } from "../lib/api";
 
 export type CheckStatus = "pass" | "warn" | "fail" | "skipped" | "running";
 
@@ -177,10 +178,7 @@ export function useVerificationStream(verificationId: string | null): Verificati
       if (disposed || terminal) return;
       buffer.current.status = retries === 0 ? "connecting" : "connecting";
       dirty.current = true;
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      socket = new WebSocket(
-        `${protocol}//${window.location.host}/ws/verifications/${verificationId}`,
-      );
+      socket = new WebSocket(wsUrl(`/ws/verifications/${verificationId}`));
       socket.onopen = () => {
         retries = 0;
         buffer.current.status = "live";

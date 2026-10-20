@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { wsUrl } from "../lib/api";
 
 export type StreamStatus = "connecting" | "live" | "reconnecting" | "closed";
 
@@ -204,8 +205,7 @@ export function useRunStream(runId: string | null): StreamState {
       if (disposed) return;
       buffers.current.status = retries === 0 ? "connecting" : "reconnecting";
       dirty.current = true;
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      socket = new WebSocket(`${protocol}//${window.location.host}/ws/runs/${runId}`);
+      socket = new WebSocket(wsUrl(`/ws/runs/${runId}`));
       socket.onopen = () => {
         retries = 0;
         buffers.current.status = "live";

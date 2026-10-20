@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch } from "../lib/api";
 import { CheckList } from "../components/CheckList";
 import { RecommendedCheckpoint } from "../components/RecommendedCheckpoint";
 import { SummaryCards } from "../components/SummaryCards";
@@ -37,9 +38,8 @@ export function VerifyDemo() {
 
   useEffect(() => {
     let disposed = false;
-    fetch("/api/v1/datasets")
-      .then((response) => (response.ok ? response.json() : null))
-      .then((body: { items?: DatasetMeta[] } | null) => {
+    apiFetch<{ items?: DatasetMeta[] }>("/api/v1/datasets")
+      .then((body) => {
         if (disposed || !body?.items) return;
         setDatasets(body.items);
         if (body.items.length > 0 && !selectedHash) {
@@ -61,10 +61,9 @@ export function VerifyDemo() {
     const status = stream.verificationStatus;
     if (!verificationId || !status || status === "running") return;
     let disposed = false;
-    fetch(`/api/v1/verifications/${verificationId}`)
-      .then((response) => (response.ok ? response.json() : null))
-      .then((body: { derived?: Derived; checks?: CheckItem[] } | null) => {
-        if (disposed || !body) return;
+    apiFetch<{ derived?: Derived; checks?: CheckItem[] }>(`/api/v1/verifications/${verificationId}`)
+      .then((body) => {
+        if (disposed) return;
         if (body.derived) setFinalDerived(body.derived);
         if (Array.isArray(body.checks)) setFinalChecks(body.checks);
       })
@@ -81,21 +80,16 @@ export function VerifyDemo() {
     setAcknowledged(false);
     setFinalDerived(null);
     setFinalChecks(null);
-    const response = await fetch("/api/v1/verifications", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dataset_hash: selectedHash, model_family: modelFamily }),
-    });
-    if (!response.ok) {
-      const body = (await response.json().catch(() => null)) as {
-        error?: { message?: string };
-      } | null;
-      setStartError(body?.error?.message ?? "Verification could not start.");
-      return;
+    try {
+      const started = await apiFetch<VerificationStart>("/api/v1/verifications", {
+        method: "POST",
+        body: JSON.stringify({ dataset_hash: selectedHash, model_family: modelFamily }),
+      });
+      setCachedHit(Boolean(started.cached));
+      setVerificationId(started.id);
+    } catch (exc) {
+      setStartError(exc instanceof Error ? exc.message : "Verification could not start.");
     }
-    const started = (await response.json()) as VerificationStart;
-    setCachedHit(Boolean(started.cached));
-    setVerificationId(started.id);
   }
 
   const finished = stream.verificationStatus !== null;

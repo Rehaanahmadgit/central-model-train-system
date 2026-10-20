@@ -1,6 +1,6 @@
 """Dataset schemas; meta.json fields per doc 04 §1 (+ optional project_id, D33)."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Dataset(BaseModel):
@@ -14,3 +14,7 @@ class Dataset(BaseModel):
     project_id: str | None = None
     # Verification status summary [doc 05 §1]; filled in slice 5/6.
     verification_summary: None = None
+
+
+class SampleCreate(BaseModel):
+    kind: str = Field(default="tabular", pattern="^(tabular|classification|yolo)$")

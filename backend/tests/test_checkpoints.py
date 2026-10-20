@@ -198,6 +198,7 @@ def test_unknown_catalog_id(tmp_path: Path) -> None:
     assert excinfo.value.code == "CHECKPOINT_NOT_FOUND"
 
 
+@pytest.mark.slow
 def test_retries_then_succeeds(tmp_path: Path, http_server: str) -> None:
     _write_catalog(tmp_path, [_entry(http_server)])
     _RangeHandler.fail_first = 2

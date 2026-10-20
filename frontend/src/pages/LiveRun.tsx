@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { apiFetch } from "../lib/api";
 import { ConnectionIndicator } from "../components/ConnectionIndicator";
 import { MetricChart } from "../components/MetricChart";
 import { useRunStream } from "../hooks/useRunStream";
@@ -70,12 +71,9 @@ export function LiveRun({ runId, theme, onBack }: LiveRunProps) {
   // Static run info (run.json): params, checkpoint, seed, env, timestamps.
   useEffect(() => {
     let disposed = false;
-    fetch(`/api/v1/runs/${runId}`)
-      .then((response) => (response.ok ? (response.json() as Promise<RunInfo>) : null))
+    apiFetch<RunInfo>(`/api/v1/runs/${runId}`)
       .then((body) => {
-        if (disposed) return;
-        if (body) setInfo(body);
-        else setLoadError("Could not load run info.");
+        if (!disposed) setInfo(body);
       })
       .catch(() => {
         if (!disposed) setLoadError("Could not load run info.");
@@ -132,7 +130,7 @@ export function LiveRun({ runId, theme, onBack }: LiveRunProps) {
   );
 
   async function control(action: "pause" | "resume" | "stop"): Promise<void> {
-    await fetch(`/api/v1/runs/${runId}/${action}`, { method: "POST" });
+    await apiFetch<unknown>(`/api/v1/runs/${runId}/${action}`, { method: "POST" });
   }
 
   const live = ["queued", "preparing", "running", "paused", "evaluating"].includes(state);
@@ -144,7 +142,7 @@ export function LiveRun({ runId, theme, onBack }: LiveRunProps) {
           ← Runs
         </button>
         <h2 className="text-xl font-semibold">{info?.name ?? "Run"} · <span className="font-mono text-base">{runId}</span></h2>
-        <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold text-white ${STATE_COLORS[state] ?? "bg-text-secondary"}`}>
+        <span data-testid="run-state" className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold text-white ${STATE_COLORS[state] ?? "bg-text-secondary"}`}>
           {state}
         </span>
         <ConnectionIndicator status={stream.status} />

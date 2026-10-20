@@ -1,9 +1,9 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
-import { EmptyState } from "./components/EmptyState";
 import { RunsList } from "./pages/RunsList";
 import { VerifyDemo } from "./pages/VerifyDemo";
+import { Wizard } from "./pages/Wizard";
 import { applyTheme, initialTheme, type Theme } from "./lib/theme";
 
 // Lazy-loaded so ECharts lands in a separate chunk [code-splitting].
@@ -11,13 +11,12 @@ const LiveRun = lazy(() =>
   import("./pages/LiveRun").then((module) => ({ default: module.LiveRun })),
 );
 
-type View = "home" | "runs" | "verify";
+type View = "home" | "runs" | "verify" | "wizard";
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [view, setView] = useState<View>("home");
   const [openRunId, setOpenRunId] = useState<string | null>(null);
-  const [wizardNotice, setWizardNotice] = useState(false);
 
   useEffect(() => {
     applyTheme(theme);
@@ -28,16 +27,10 @@ export default function App() {
   }
 
   function navigate(item: string): void {
-    if (item === "Runs") {
-      setOpenRunId(null);
-      setView("runs");
-    } else if (item === "Datasets") {
-      setOpenRunId(null);
-      setView("verify");
-    } else {
-      setOpenRunId(null);
-      setView("home");
-    }
+    setOpenRunId(null);
+    if (item === "Runs") setView("runs");
+    else if (item === "Datasets") setView("verify");
+    else setView("home");
   }
 
   return (
@@ -62,6 +55,13 @@ export default function App() {
             </section>
           ) : view === "verify" ? (
             <VerifyDemo />
+          ) : view === "wizard" ? (
+            <Wizard
+              onTrained={(runId) => {
+                setOpenRunId(runId);
+                setView("runs");
+              }}
+            />
           ) : (
             <>
               <header>
@@ -70,32 +70,24 @@ export default function App() {
                   Projects and recent training runs appear here.
                 </p>
               </header>
-              {wizardNotice && (
-                <p role="status" className="rounded-md border border-border bg-surface p-4 text-sm">
-                  The 5-step wizard (Dataset → Model → Verify → Configure → Train) arrives in Slice 10
-                  [doc 12 M2].
+              <div className="flex flex-col items-center gap-4 rounded-lg border border-dashed border-border bg-surface px-8 py-16 text-center">
+                <h2 className="text-xl font-semibold">Train your first model</h2>
+                <p className="max-w-md text-sm text-text-secondary">
+                  Upload a dataset, pick a model, verify it, configure and train — all in one flow.
                 </p>
-              )}
-              <EmptyState
-                title="No runs yet"
-                message="Upload a dataset, pick a model and start your first training run."
-                actionLabel="New training"
-                onAction={() => setWizardNotice(true)}
-              />
-              <div className="flex gap-3">
                 <button
                   type="button"
-                  onClick={() => navigate("Runs")}
-                  className="self-start rounded-md border border-border px-4 py-2 text-sm hover:bg-bg"
+                  onClick={() => setView("wizard")}
+                  className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover"
                 >
-                  Open runs
+                  New training
                 </button>
                 <button
                   type="button"
-                  onClick={() => navigate("Datasets")}
-                  className="self-start rounded-md border border-border px-4 py-2 text-sm hover:bg-bg"
+                  onClick={() => navigate("Runs")}
+                  className="rounded-md border border-border px-4 py-2 text-sm hover:bg-bg"
                 >
-                  Verify a dataset
+                  View runs
                 </button>
               </div>
             </>

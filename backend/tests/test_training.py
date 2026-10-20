@@ -100,6 +100,7 @@ def test_state_machine_valid_and_invalid_transitions() -> None:
 # --- real trainers (fast) ---------------------------------------------------
 
 
+@pytest.mark.slow
 def test_random_forest_trains_end_to_end(client: TestClient, home: Path) -> None:
     run_id = _start_run(client, entries=build_tabular(rows=60), model_family="random_forest")
     body = _wait_run(client, run_id)
@@ -123,6 +124,7 @@ def test_random_forest_trains_end_to_end(client: TestClient, home: Path) -> None
     assert any(item["id"] == run_id for item in listed["items"])
 
 
+@pytest.mark.slow
 def test_cnn_trains_end_to_end(client: TestClient, home: Path) -> None:
     run_id = _start_run(
         client,
@@ -148,6 +150,7 @@ def test_models_endpoint_lists_trainers(client: TestClient) -> None:
 # --- control: stop is not a failure (fast, needs a slow enough loop) --------
 
 
+@pytest.mark.slow
 def test_stop_marks_stopped_not_failed(client: TestClient, home: Path) -> None:
     run_id = _start_run(
         client,
@@ -171,6 +174,7 @@ def test_stop_marks_stopped_not_failed(client: TestClient, home: Path) -> None:
 # --- checkpoint resolution at start -----------------------------------------
 
 
+@pytest.mark.slow
 def test_checkpoint_resolved_at_start(client: TestClient, home: Path) -> None:
     payload = bytes(range(256)) * 100
     digest = hashlib.sha256(payload).hexdigest()

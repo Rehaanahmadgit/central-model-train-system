@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch } from "../lib/api";
 
 interface RunsListProps {
   onOpen: (runId: string) => void;
@@ -32,9 +33,8 @@ export function RunsList({ onOpen }: RunsListProps) {
 
   useEffect(() => {
     let disposed = false;
-    fetch("/api/v1/runs")
-      .then((response) => (response.ok ? response.json() : null))
-      .then((body: { items?: RunSummary[] } | null) => {
+    apiFetch<{ items?: RunSummary[] }>("/api/v1/runs")
+      .then((body) => {
         if (!disposed && body?.items) setRuns(body.items);
       })
       .catch(() => {

@@ -8,8 +8,8 @@ from fastapi import APIRouter, Query, Request, Response, status
 from app.core.config import Settings
 from app.core.errors import ApiError
 from app.core.pagination import paginate
-from app.schemas.datasets import Dataset
-from app.services import datasets
+from app.schemas.datasets import Dataset, SampleCreate
+from app.services import datasets, samples
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -37,6 +37,14 @@ def list_all(
         datasets.list_datasets(_settings(request).home, project_id=project),
         page,
         page_size,
+    )
+
+
+@router.post("/sample", status_code=201)
+def create_sample(body: SampleCreate, request: Request) -> dict[str, Any]:
+    """Create a tiny synthetic dataset through the normal flow [DIST-11]."""
+    return samples.create_sample_dataset(
+        _settings(request).home, _settings(request), kind=body.kind
     )
 
 
