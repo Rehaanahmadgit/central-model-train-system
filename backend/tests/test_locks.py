@@ -45,12 +45,16 @@ def _child_write_block(home: Path, marker: str) -> None:
 def test_per_run_lock_prevents_interleaving(tmp_path: Path) -> None:
     # Two processes write blocks to the same file under the same lock;
     # the final file must be two contiguous blocks, never interleaved.
-    children = [os.fork() for _ in range(2)]
-    if children[0] == 0:
-        _child_write_block(tmp_path, "A")
-    if children[1] == 0:
-        _child_write_block(tmp_path, "B")
-    for pid in children:
+    # Deterministic: the parent forks each child sequentially and waits; the
+    # child never re-forks (the old `[os.fork() for _ in range(2)]` pattern let
+    # the first child fork again, creating a third writer — the flake).
+    pids: list[int] = []
+    for marker in ("A", "B"):
+        pid = os.fork()
+        if pid == 0:
+            _child_write_block(tmp_path, marker)  # os._exit(0) inside, never returns
+        pids.append(pid)
+    for pid in pids:
         os.waitpid(pid, 0)
 
     records = list(read_jsonl(tmp_path / "shared.jsonl"))

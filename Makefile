@@ -1,4 +1,4 @@
-# TrainHub quality gates — ONE entrypoint: `make verify` [doc 16 FAST-01].
+# TrainHub quality gates [doc 16 FAST-01/02].
 # PYTHON selects the backend interpreter:
 #   make verify                  (laptop: backend/.venv/bin/python)
 #   make verify PYTHON=python    (CI, after `pip install -e "./backend[dev]"`)
@@ -6,18 +6,25 @@ PYTHON ?= backend/.venv/bin/python
 # Absolute path so `cd backend && $(PY_BACKEND) ...` works from the repo root.
 PY_BACKEND := $(abspath $(shell command -v $(PYTHON) 2>/dev/null || echo $(abspath $(PYTHON))))
 
-.PHONY: help verify test-fast test-full test-gpu
+.PHONY: help verify verify-full test-fast test-full test-gpu check-python
 
 help: ## List available targets
-	@echo "verify     lint + type-check + fast tests + frontend build  [doc 16 FAST-01]"
-	@echo "test-fast  pytest, excluding slow and gpu tests             [doc 16 FAST-02]"
-	@echo "test-full  pytest, everything (milestone-end only)"
-	@echo "test-gpu   pytest -m gpu (GPU server only)                  [doc 14 §3.5]"
+	@echo "verify       lint + type-check + fast tests + frontend build  [doc 16 FAST-01]"
+	@echo "verify-full  same, but the full suite incl. slow crash tests  [milestones, CI]"
+	@echo "test-fast    pytest, excluding slow and gpu tests             [doc 16 FAST-02]"
+	@echo "test-full    pytest, everything (milestone-end only)"
+	@echo "test-gpu     pytest -m gpu (GPU server only)                  [doc 14 §3.5]"
 
-verify: check-python ## The single gate: ruff + mypy + fast tests + frontend build
+verify: check-python ## The fast gate: ruff + mypy + fast tests + frontend build
 	cd backend && $(PY_BACKEND) -m ruff check app tests
 	cd backend && $(PY_BACKEND) -m mypy app
 	$(MAKE) test-fast
+	npm --prefix frontend run build
+
+verify-full: check-python ## Full gate incl. slow crash tests [doc 16 FAST-02]
+	cd backend && $(PY_BACKEND) -m ruff check app tests
+	cd backend && $(PY_BACKEND) -m mypy app
+	$(MAKE) test-full
 	npm --prefix frontend run build
 
 test-fast: check-python ## Fast tests only (< 60 s target, no network, no GPU) [doc 16 FAST-02]

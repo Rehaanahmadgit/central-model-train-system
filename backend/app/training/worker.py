@@ -28,6 +28,7 @@ _pause_event = threading.Event()
 _stop_event = threading.Event()
 _control_thread: threading.Thread | None = None
 _heartbeat_thread: threading.Thread | None = None
+_system_thread: threading.Thread | None = None
 _heartbeat_seconds = 5.0
 
 
@@ -62,6 +63,47 @@ def _heartbeat() -> None:
     """Emit a heartbeat every N seconds so the parent can detect a dead worker [doc 08 §5]."""
     while not _stop_event.is_set():
         emit("heartbeat", {"ts": datetime.now().isoformat(timespec="milliseconds")})
+        time.sleep(_heartbeat_seconds)
+
+
+def _sample_system() -> None:
+    """Emit CPU/RAM every N seconds for the live system-stats panel [doc 08 §6].
+
+    Reads /proc directly (no psutil dependency). GPU stays None — the parent
+    fills real GPU values on the GPU image, and the UI shows "No GPU detected".
+    """
+    import os
+
+    proc = Path("/proc")
+    clock = os.sysconf("SC_CLK_TCK")
+    previous: tuple[int, int] | None = None
+    while not _stop_event.is_set():
+        try:
+            stat = (proc / "self" / "stat").read_text().split()
+            utime = int(stat[13])
+            stime = int(stat[14])
+            status = (proc / "self" / "status").read_text()
+            ram_kb = 0
+            for line in status.splitlines():
+                if line.startswith("VmRSS:"):
+                    ram_kb = int(line.split()[1])
+                    break
+            cpu: float | None = None
+            if previous is not None:
+                delta = (utime + stime) - previous[0]
+                cpu = round(100 * delta / (clock * _heartbeat_seconds), 1)
+            previous = (utime + stime, previous[1] if previous else 0)
+            emit(
+                "system",
+                {
+                    "gpu_util": None,
+                    "gpu_mem_mb": None,
+                    "cpu": cpu,
+                    "ram_mb": round(ram_kb / 1024, 1),
+                },
+            )
+        except (OSError, IndexError, ValueError):  # pragma: no cover - defensive
+            pass
         time.sleep(_heartbeat_seconds)
 
 
@@ -153,12 +195,14 @@ class WorkerRunContext:
 
 def start_control_and_heartbeat(stdin: TextIO, stdout: TextIO, *, heartbeat_seconds: float) -> None:
     """Wire the module-level pipes; called once by the worker entry point."""
-    global _stdout, _control_thread, _heartbeat_thread, _heartbeat_seconds
+    global _stdout, _control_thread, _heartbeat_thread, _system_thread, _heartbeat_seconds
     _stdout = stdout
     _heartbeat_seconds = heartbeat_seconds
     _pause_event.clear()
     _stop_event.clear()
     _control_thread = threading.Thread(target=_read_control, args=(stdin,), daemon=True)
     _heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
+    _system_thread = threading.Thread(target=_sample_system, daemon=True)
     _control_thread.start()
     _heartbeat_thread.start()
+    _system_thread.start()

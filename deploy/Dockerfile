@@ -44,7 +44,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-acc
 # --- CPU target (laptop) [doc 14 §2] -----------------------------------------
 FROM base AS cpu
 # CPU-only torch (178 MB wheel vs ~555 MB for the PyPI CUDA build) [D70].
-RUN pip install --no-cache-dir torch==2.6.0+cpu --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir torch==2.7.1+cpu --index-url https://download.pytorch.org/whl/cpu
 
 # --- GPU target (server) [doc 14 §2] ------------------------------------------
 # Training slice (S8) switches this target to the CUDA runtime base + CUDA

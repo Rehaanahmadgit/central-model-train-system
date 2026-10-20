@@ -27,6 +27,13 @@ export interface TimelineEvent {
   data: Record<string, unknown>;
 }
 
+export interface SystemStat {
+  gpu_util: number | null;
+  gpu_mem_mb: number | null;
+  cpu: number | null;
+  ram_mb: number | null;
+}
+
 export interface StreamState {
   status: StreamStatus;
   lastSeq: number;
@@ -34,6 +41,7 @@ export interface StreamState {
   metrics: MetricPoint[];
   logs: LogLine[];
   events: TimelineEvent[];
+  system: SystemStat | null;
 }
 
 const MAX_METRICS = 500;
@@ -63,6 +71,7 @@ export function useRunStream(runId: string | null): StreamState {
     metrics: [],
     logs: [],
     events: [],
+    system: null,
   });
 
   const buffers = useRef<{
@@ -72,7 +81,8 @@ export function useRunStream(runId: string | null): StreamState {
     runState: string | null;
     lastSeq: number;
     status: StreamStatus;
-  }>({ metrics: [], logs: [], events: [], runState: null, lastSeq: 0, status: "connecting" });
+    system: SystemStat | null;
+  }>({ metrics: [], logs: [], events: [], runState: null, lastSeq: 0, status: "connecting", system: null });
   const dirty = useRef(false);
 
   useEffect(() => {
@@ -89,6 +99,7 @@ export function useRunStream(runId: string | null): StreamState {
       runState: null,
       lastSeq: storedSeq,
       status: "connecting",
+      system: null,
     };
     dirty.current = true;
 
@@ -107,6 +118,7 @@ export function useRunStream(runId: string | null): StreamState {
         metrics: buffer.metrics.slice(-MAX_METRICS),
         logs: buffer.logs.slice(-MAX_LOGS),
         events: buffer.events.slice(-MAX_EVENTS),
+        system: buffer.system,
       });
     }, FLUSH_MS);
 
@@ -177,6 +189,13 @@ export function useRunStream(runId: string | null): StreamState {
           data,
         });
         buffer.events = buffer.events.slice(-MAX_EVENTS);
+      } else if (message.type === "system") {
+        buffer.system = {
+          gpu_util: typeof data.gpu_util === "number" ? data.gpu_util : null,
+          gpu_mem_mb: typeof data.gpu_mem_mb === "number" ? data.gpu_mem_mb : null,
+          cpu: typeof data.cpu === "number" ? data.cpu : null,
+          ram_mb: typeof data.ram_mb === "number" ? data.ram_mb : null,
+        };
       }
       dirty.current = true;
     };

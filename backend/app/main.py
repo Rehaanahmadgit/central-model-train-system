@@ -128,7 +128,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await job_manager.shutdown()
             executor = getattr(application.state, "executor", None)
             if executor is not None:
-                executor.shutdown(wait=False, cancel_futures=True)
+                # wait=True joins the worker processes; wait=False was leaving
+                # fork-context workers unjoined, which could hang the whole
+                # interpreter at shutdown (S9 root-cause fix).
+                executor.shutdown(wait=True, cancel_futures=True)
 
     application = FastAPI(
         title="TrainHub",
