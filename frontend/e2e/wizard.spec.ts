@@ -28,4 +28,7 @@ test("sample dataset -> RandomForest -> verify -> train -> completed", async ({ 
   await page.getByTestId("start-training").click();
 
   await expect(page.getByTestId("run-state")).toHaveText("completed", { timeout: 90_000 });
+
+  // Capture the finished LiveRun page as an artifact for review.
+  await page.screenshot({ path: "test-results/liverun-completed.png", fullPage: true });
 });

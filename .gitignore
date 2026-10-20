@@ -25,3 +25,7 @@ frontend/dist/
 
 # Editor-local files (machine-specific paths; not project config)
 .vscode/
+
+# Playwright artifacts
+frontend/test-results/
+frontend/playwright-report/
