@@ -31,7 +31,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [x] S6 — Verification cache + normalized manifest + remaining checks + task detection + recommendations. **DONE 2026-10-20.** 23 checks (doc 06 §4), manifest parquet, `report.json` derived facts, `cache/verif/{key}.json` pointer with cache hit on POST, task detection with reason, hparam + checkpoint recommendations, summary cards + warning acknowledgement in the UI, `tests/fixtures/make_datasets.py` spec table (18 datasets, all outcomes asserted). `make verify` green: **185 tests in 14.44 s**.
 
 - [x] S7 — Checkpoint catalog + resolver + selection v1. **DONE 2026-10-20.** `catalog.yaml` (TODO(user) placeholders, unverified entries refused), `CheckpointResolver` (flock → disk preflight → resumable `.part` → sha256 → atomic move → `index.json`), `/checkpoints` API (list/prefetch/evict/reload), `trainhub checkpoints list|prefetch|import|rescan` CLI, recommended-checkpoint card in the Verify UI. 25 new tests (local HTTP server with Range, sha mismatch, concurrent lock, import, evict, corrupt cache). **Docker sanity passed** (see below).
-- [ ] S8 — Plugin base + first trainer plugin + Job Manager + subprocess supervision + telemetry + GPU slot locks.
+- [x] S8 — Plugin base + 2 REAL trainers + Job Manager + supervised subprocess + telemetry. **DONE 2026-10-20.** `TrainingEngine` removed the in-process fake run; `JobManager` spawns `python -m app.training.worker_main` in its own process group, reads events off stdout (single events.jsonl writer in the parent), heartbeat every 5 s / 60 s → `failed(worker_lost)`, pause/resume/stop over stdin, CPU concurrency semaphore (`max_cpu_jobs`). Two real trainers: `random_forest` (sklearn, tabular) and `cnn` (tiny PyTorch, image classification) on `manifest.parquet`, `dev_preset` = 2 epochs/32 px. `/runs` + `/models` API. Checkpoint resolution at start only when `checkpoint_catalog_id` is set. `make verify` green: **218 tests in 36.81 s**. GPU slot locks deferred to the GPU slice.
 - [ ] S9 — Live Run page (charts, logs, system stats, info panel).
 - [ ] S10 — New Training Wizard end to end.
 - [ ] S11 — Pause/resume/stop + periodic checkpoints + `interrupted` recovery + failure classification.
@@ -59,7 +59,9 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [x] FAST-05/06 file and reply discipline — state files updated, no spec-index repeat.
 
 ## MVP acceptance (doc 01 §10)
-1. [x] Upload → model → verification → pass/fail details (S3+S5+S6; live smoke 2026-10-20).
+1. [x] Upload → model → verification → pass/fail details (S3+S5+S6).
+2. [x] Pass → Start Training → job starts (S8: POST /runs spawns a real subprocess).
+6. [x] Killed trainer subprocess → `failed(worker_lost)`; API stays up (S8 slow test).
 2. [ ] Pass → Start Training → job starts.
 3. [ ] Checkpoint downloaded once, reused (log + `index.json`).
 4. [ ] Live loss/accuracy + logs; refresh restores state.

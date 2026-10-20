@@ -15,7 +15,8 @@ jobs:
           # D54: runtime standardized on Python 3.12 (laptop = CI = Docker).
           python-version: "3.12"
       - run: python -m pip install --upgrade pip
-      - run: pip install -e "./backend[dev]"
+      - run: pip install -e "./backend[dev,training]"
+      - run: pip install torch==2.6.0+cpu --index-url https://download.pytorch.org/whl/cpu
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

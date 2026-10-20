@@ -52,10 +52,6 @@ class Settings(BaseSettings):
     max_extract_total_bytes: int = Field(default=20 * 1024**3, ge=1)
     zip_bomb_ratio: int = Field(default=200, ge=2)
     zip_bomb_floor_bytes: int = Field(default=100 * 1024**2, ge=1)
-    # Demo fake run for the live chart [doc 12 Phase 0 M0]. ASSUMPTION: off by default.
-    demo_fake_run: bool = False
-    demo_fake_run_steps: int = Field(default=120, ge=1)
-    demo_fake_run_interval: float = Field(default=0.5, gt=0)
     # WebSocket cadence [doc 05 §8].
     ws_heartbeat_seconds: float = Field(default=20.0, gt=0)
     ws_throttle_interval: float = Field(default=0.1, gt=0)
@@ -64,6 +60,10 @@ class Settings(BaseSettings):
     verify_workers: int = Field(default=2, ge=1, le=8)
     verify_check_timeout_seconds: float = Field(default=300.0, gt=0)
     verify_sample_cap: int = Field(default=5000, ge=1)
+    # Training subprocess supervision [doc 08 §5]: heartbeat every 5 s,
+    # 60 s of silence → worker_lost failure.
+    heartbeat_seconds: float = Field(default=5.0, gt=0)
+    worker_lost_seconds: float = Field(default=60.0, gt=0)
 
     @field_validator("device")
     @classmethod

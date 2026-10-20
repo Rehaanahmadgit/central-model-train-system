@@ -15,6 +15,7 @@ MODEL_TASK_MAP: dict[str, set[str]] = {
     "yolo": {"object_detection"},
     "resnet": {"image_classification"},
     "efficientnet": {"image_classification"},
+    "cnn": {"image_classification"},
     "random_forest": {"tabular_classification", "tabular_regression"},
     "xgboost": {"tabular_classification", "tabular_regression"},
 }

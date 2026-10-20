@@ -30,6 +30,12 @@ dev = [
     "ruff==0.17.1",
     "types-pyyaml==6.0.12.20260906",
 ]
+# Real trainers [doc 08 §2]. ``torch`` is NOT listed here: the CPU image installs
+# torch==2.6.0+cpu from https://download.pytorch.org/whl/cpu (the PyPI Linux wheel
+# bundles CUDA and is ~3x larger). The GPU image swaps in the CUDA build (D70).
+training = [
+    "scikit-learn==1.9.1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

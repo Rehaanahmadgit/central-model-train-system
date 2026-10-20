@@ -4,7 +4,7 @@ services:
     build:
       context: ..
       target: cpu
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload --no-access-log
     environment:
       TRAINHUB_HOME: /data
       TRAINHUB_DEVICE: cpu

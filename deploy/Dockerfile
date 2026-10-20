@@ -26,7 +26,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY backend/pyproject.toml backend/README.md ./
 COPY backend/app ./app
-RUN pip install --no-cache-dir .
+# Runtime deps + scikit-learn (training extra). torch is per-target below [doc 14 §4].
+RUN pip install --no-cache-dir ".[training]"
 COPY --from=frontend-build /build/dist ./frontend-dist
 
 # Non-root service user [doc 08 §10]; /data is the persistent volume [doc 14 §7].
@@ -37,10 +38,13 @@ USER trainhub
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')" || exit 1
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# --no-access-log: uvicorn access lines contain client IPs; never log them [doc 10 §1].
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log"]
 
 # --- CPU target (laptop) [doc 14 §2] -----------------------------------------
 FROM base AS cpu
+# CPU-only torch (178 MB wheel vs ~555 MB for the PyPI CUDA build) [D70].
+RUN pip install --no-cache-dir torch==2.6.0+cpu --index-url https://download.pytorch.org/whl/cpu
 
 # --- GPU target (server) [doc 14 §2] ------------------------------------------
 # Training slice (S8) switches this target to the CUDA runtime base + CUDA

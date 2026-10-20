@@ -5,13 +5,13 @@
 - Optional global access token is added in a later slice [doc 10 §2, FR-20].
 """
 
-import asyncio
 import logging
 import multiprocessing
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -30,8 +30,27 @@ from app.realtime.broadcaster import EventBroadcaster
 from app.realtime.verification_ws import router as verification_ws_router
 from app.realtime.ws import router as ws_router
 from app.storage.recovery import recover_workspace
+from app.training.job_manager import JobManager
 
 REQUEST_ID_HEADER = "X-Request-Id"
+
+
+def _queued_run_ids(home: Path) -> list[str]:
+    """Run ids left in ``queued`` state, oldest first [doc 04 §3 rule 6]."""
+    from app.storage.atomic import read_json
+
+    runs_dir = home / "runs"
+    if not runs_dir.is_dir():
+        return []
+    queued: list[tuple[str, str]] = []
+    for path in runs_dir.glob("*/run.json"):
+        try:
+            data = read_json(path)
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("state") == "queued":
+            queued.append((str(data.get("queued_at") or ""), path.parent.name))
+    return [run_id for _, run_id in sorted(queued)]
 logger = logging.getLogger(__name__)
 
 
@@ -93,39 +112,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 recovery_warnings[:] = [
                     f"quarantined corrupt file: {path}" for path in report.quarantined
                 ] + [f"repaired JSONL tail: {path}" for path in report.repaired_jsonl]
-        demo_task: asyncio.Task[str | None] | None = None
-        if resolved.demo_fake_run:
-            if not workspace_ok:
-                # Fail softly: never crash startup/shutdown over a demo [doc 12 Phase 0].
-                logger.warning("workspace unavailable; skipping demo fake run")
-            else:
-                # Hello-world demo job streaming fake metrics [doc 12 Phase 0 M0].
-                from app.services.fake_run import run_fake_training
-
-                async def safe_demo() -> str | None:
-                    try:
-                        return await run_fake_training(
-                            resolved.home,
-                            broadcaster,
-                            steps=resolved.demo_fake_run_steps,
-                            interval=resolved.demo_fake_run_interval,
-                        )
-                    except Exception:
-                        logger.warning("demo fake run failed; skipping", exc_info=True)
-                        return None
-
-                demo_task = asyncio.create_task(safe_demo())
+        # In-process Job Manager: supervised training subprocesses [doc 08 §3].
+        job_manager = JobManager(resolved.home, resolved, broadcaster)
+        application.state.job_manager = job_manager
+        if workspace_ok:
+            # Re-queue runs left in `queued` before a restart [doc 04 §3 rule 6].
+            for run_id in _queued_run_ids(resolved.home):
+                try:
+                    await job_manager.start(run_id)
+                except Exception:
+                    logger.warning("could not requeue run %s at startup", run_id, exc_info=True)
         try:
             yield
         finally:
-            if demo_task is not None:
-                demo_task.cancel()
-                try:
-                    await demo_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:
-                    logger.warning("demo fake run raised during shutdown", exc_info=True)
+            await job_manager.shutdown()
             executor = getattr(application.state, "executor", None)
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)
