@@ -18,7 +18,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 from fixtures.make_datasets import build_classification, build_tabular, materialize, to_zip
-from helpers import upload_dataset
+from helpers import make_pretrained_checkpoint, upload_dataset
 
 from app.core.config import Settings
 from app.core.states import can_transition, transition
@@ -183,10 +183,9 @@ def test_stop_marks_stopped_not_failed(client: TestClient, home: Path) -> None:
 
 @pytest.mark.slow
 def test_checkpoint_resolved_at_start(client: TestClient, home: Path) -> None:
-    payload = bytes(range(256)) * 100
-    digest = hashlib.sha256(payload).hexdigest()
-    source = home / "pretrained.bin"
-    source.write_bytes(payload)
+    source = home / "pretrained.ckpt"
+    make_pretrained_checkpoint(source, num_classes=2, fill=0.5)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
     # Override the shipped catalog with a verified, local entry [doc 14 §5].
     (home / "checkpoints" / "catalog.yaml").write_text(
         yaml.safe_dump(
@@ -200,9 +199,9 @@ def test_checkpoint_resolved_at_start(client: TestClient, home: Path) -> None:
                     "source_type": "file",
                     "source_uri": f"file://{source}",
                     "sha256": digest,
-                    "size_bytes": len(payload),
+                    "size_bytes": source.stat().st_size,
                     "license": "MIT",
-                    "filename": "tiny-backbone.bin",
+                    "filename": "tiny-backbone.ckpt",
                 }
             ]
         ),
@@ -222,6 +221,11 @@ def test_checkpoint_resolved_at_start(client: TestClient, home: Path) -> None:
     assert checkpoint["sha256"] == digest
     assert checkpoint["source"] == "download"
     assert Path(checkpoint["path"]).is_file()
+    # The resolved checkpoint was actually consumed by the trainer.
+    events = list(read_jsonl(home / "runs" / run_id / "events.jsonl"))
+    assert any(
+        "loaded pretrained checkpoint" in e["data"]["message"] for e in events if e["type"] == "log"
+    )
 
 
 # --- crash recovery (slow) --------------------------------------------------
@@ -345,9 +349,7 @@ def test_exact_resume_from_last_checkpoint(client: TestClient, home: Path) -> No
     # The worker logged the exact resume and continued past the parent's epoch.
     records = list(read_jsonl(home / "runs" / second_id / "events.jsonl"))
     assert any(
-        "resumed from last.ckpt" in r["data"]["message"]
-        for r in records
-        if r["type"] == "log"
+        "resumed from last.ckpt" in r["data"]["message"] for r in records if r["type"] == "log"
     )
     assert any(r["type"] == "metric" and r["data"].get("epoch") == 2 for r in records)
 
@@ -358,9 +360,7 @@ def test_rf_resume_unavailable_without_checkpoint(client: TestClient, home: Path
     first_id = _start_run(client, entries=build_tabular(rows=40), model_family="random_forest")
     first = _wait_run(client, first_id)
     assert first["state"] == "completed"
-    response = client.post(
-        f"/api/v1/runs/{first_id}/retry", json={"resume_from_last": True}
-    )
+    response = client.post(f"/api/v1/runs/{first_id}/retry", json={"resume_from_last": True})
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "RESUME_UNAVAILABLE"
 
@@ -392,9 +392,7 @@ def test_resume_without_epoch_increase_is_clean(client: TestClient, home: Path) 
     first = _wait_run(client, first_id)
     assert first["state"] == "completed"
 
-    response = client.post(
-        f"/api/v1/runs/{first_id}/retry", json={"resume_from_last": True}
-    )
+    response = client.post(f"/api/v1/runs/{first_id}/retry", json={"resume_from_last": True})
     assert response.status_code == 202, response.text
     second = _wait_run(client, response.json()["id"])
     # start_epoch (3) > epochs (2): the loop is empty and the run still

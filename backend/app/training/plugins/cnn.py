@@ -76,6 +76,7 @@ class CNNTrainer(TrainerPlugin):
         classes = sorted({label for label in labels if label is not None})
         if len(classes) < 2:
             raise ValueError(f"classification needs at least 2 classes, got {classes}")
+        self._classes = classes
         self._class_to_id = {name: index for index, name in enumerate(classes)}
 
         samples = [
@@ -110,6 +111,11 @@ class CNNTrainer(TrainerPlugin):
         self._model = _TinyCNN(len(classes))
         self._device = torch.device("cuda" if ctx.device.is_gpu else "cpu")
         self._model.to(self._device)
+        # Load the verified pretrained checkpoint (if one was resolved) BEFORE
+        # building the optimizer, so optimizer state is always fresh [FR-6, doc 07 §5].
+        checkpoint_path = getattr(ctx, "checkpoint_path", None)
+        if checkpoint_path is not None:
+            self._load_pretrained(ctx, checkpoint_path)
         self._optimizer = torch.optim.Adam(self._model.parameters(), lr=self._lr)
         self._criterion = nn.CrossEntropyLoss()
         self._start_epoch = 1
@@ -324,6 +330,67 @@ class CNNTrainer(TrainerPlugin):
             best = checkpoints / "best.ckpt"
             torch.save(payload, best)
             ctx.save_checkpoint(best, is_best=True, metrics={"epoch": epoch})
+
+    def _load_pretrained(self, ctx: RunContext, path: Path) -> None:
+        """Load verified pretrained backbone weights before fine-tuning [FR-6, doc 07 §5].
+
+        Safe deserialization only (``weights_only=True``) [doc 10 §4]. The
+        backbone (conv layers) must be shape-compatible or we fail loudly —
+        never silently skip it. The classification head is reused only when the
+        class count matches exactly; otherwise it is re-initialized and logged.
+        """
+        try:
+            payload = torch.load(path, map_location=self._device, weights_only=True)
+        except Exception as exc:
+            raise ValueError(
+                f"could not load pretrained checkpoint {path.name}: {type(exc).__name__}: {exc}"
+            ) from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("state_dict"), dict):
+            raise ValueError(
+                f"pretrained checkpoint {path.name} is not a TrainHub CNN checkpoint: "
+                "expected {schema_version, num_classes, channels, state_dict}"
+            )
+        state = payload["state_dict"]
+        model_state = self._model.state_dict()
+
+        # Backbone: every conv key must exist and match in shape.
+        for key, value in model_state.items():
+            if not key.startswith("conv"):
+                continue
+            if key not in state:
+                raise ValueError(
+                    f"pretrained checkpoint {path.name} is missing backbone key {key!r}"
+                )
+            if state[key].shape != value.shape:
+                raise ValueError(
+                    f"backbone mismatch on {key!r}: checkpoint {tuple(state[key].shape)} "
+                    f"vs model {tuple(value.shape)}"
+                )
+            model_state[key] = state[key]
+
+        # Head: reuse only when the checkpoint was trained for this class count.
+        pretrained_classes = payload.get("num_classes")
+        head_keys = [key for key in model_state if key.startswith("fc")]
+        head_matches = (
+            isinstance(pretrained_classes, int)
+            and pretrained_classes == len(self._classes)
+            and all(
+                key in state and state[key].shape == model_state[key].shape for key in head_keys
+            )
+        )
+        if head_matches:
+            for key in head_keys:
+                model_state[key] = state[key]
+            head_note = "classification head reused"
+        else:
+            head_note = f"classification head re-initialized for {len(self._classes)} classes"
+
+        self._model.load_state_dict(model_state)
+        ctx.emit_log("INFO", f"loaded pretrained checkpoint {path.name} ({head_note})")
+        ctx.emit_event(
+            "pretrained_loaded",
+            {"checkpoint": path.name, "head": head_note, "num_classes": len(self._classes)},
+        )
 
     def resume(self, ctx: RunContext, checkpoint_path: Path) -> None:
         """Exact resume from last.ckpt: restore model + optimizer + epoch [doc 08 §4]."""
