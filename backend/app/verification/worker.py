@@ -30,6 +30,7 @@ def run_verification_worker(
     model_family: str,
     task_type: str | None,
     *,
+    preset: str = "auto",
     sample_cap: int,
     check_timeout_seconds: float,
 ) -> dict[str, Any]:
@@ -62,12 +63,13 @@ def run_verification_worker(
             dataset_hash,
             model_family,
             task_type,
+            preset=preset,
             sample_cap=sample_cap,
             check_timeout_seconds=check_timeout_seconds,
             progress=progress,
             home=home,
         )
-        _persist(home, directory, dataset_hash, verification_id, model_family, outcome)
+        _persist(home, directory, dataset_hash, verification_id, model_family, outcome, preset)
         seq += 1
         progress_appender.append(
             {
@@ -92,6 +94,7 @@ def _persist(
     verification_id: str,
     model_family: str,
     outcome: dict[str, Any],
+    preset: str = "auto",
 ) -> None:
     """Manifest + report + cache pointer, all atomic [doc 04 §3 rule 1]."""
     manifest_path = home / "datasets" / dataset_hash / "manifest.parquet"
@@ -113,4 +116,9 @@ def _persist(
         "written_at": datetime.now().isoformat(timespec="seconds"),
     }
     atomic_write_json(directory / "report.json", report)
-    write_pointer(home, cache_key(dataset_hash, model_family, VERIFIER_VERSION), verification_id)
+    write_pointer(
+        home,
+        cache_key(dataset_hash, model_family, VERIFIER_VERSION),
+        verification_id,
+        preset=preset,
+    )

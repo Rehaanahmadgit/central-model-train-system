@@ -30,7 +30,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [x] S5.1 — `make verify` + FAST-02 test tiers/markers + WS close fix + verification audit lines + Python 3.12 unification + git init/commit. **DONE 2026-10-20.** `make verify` green: ruff ✓ mypy ✓ 150 fast tests ✓ frontend build ✓.
 - [x] S6 — Verification cache + normalized manifest + remaining checks + task detection + recommendations. **DONE 2026-10-20.** 23 checks (doc 06 §4), manifest parquet, `report.json` derived facts, `cache/verif/{key}.json` pointer with cache hit on POST, task detection with reason, hparam + checkpoint recommendations, summary cards + warning acknowledgement in the UI, `tests/fixtures/make_datasets.py` spec table (18 datasets, all outcomes asserted). `make verify` green: **185 tests in 14.44 s**.
 
-- [ ] S7 — Checkpoint catalog + resolver + selection v1.
+- [x] S7 — Checkpoint catalog + resolver + selection v1. **DONE 2026-10-20.** `catalog.yaml` (TODO(user) placeholders, unverified entries refused), `CheckpointResolver` (flock → disk preflight → resumable `.part` → sha256 → atomic move → `index.json`), `/checkpoints` API (list/prefetch/evict/reload), `trainhub checkpoints list|prefetch|import|rescan` CLI, recommended-checkpoint card in the Verify UI. 25 new tests (local HTTP server with Range, sha mismatch, concurrent lock, import, evict, corrupt cache). **Docker sanity passed** (see below).
 - [ ] S8 — Plugin base + first trainer plugin + Job Manager + subprocess supervision + telemetry + GPU slot locks.
 - [ ] S9 — Live Run page (charts, logs, system stats, info panel).
 - [ ] S10 — New Training Wizard end to end.
@@ -73,6 +73,11 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - Artifacts per dataset/verification: `manifest.parquet` (11-column Arrow schema), `report.json`, `checks.jsonl`, `progress.jsonl`, `cache/verif/{sha256(dataset_hash|model_family|verifier_version)}.json`.
 - Checkpoint recommendations need a catalog; without `checkpoints/catalog.yaml` the API returns `[]` + `checkpoint_catalog_configured: false` (catalog ships in S7) — no invented ids.
 - `app/samples/datasets.py` is importable from app code so DIST-11 can reuse it; `tests/fixtures/make_datasets.py` re-exports it.
+
+## S7 detail + Docker sanity (2026-10-20)
+- `docker build -f deploy/Dockerfile --target cpu` → success; `docker run -p 18080:8080 -v trainhub_s7_data:/data` → `/healthz` `{"status":"ok"}`, `/readyz` ok, SPA 200, `/api/v1/checkpoints` 200, `docker exec trainhub-s7 trainhub checkpoints list` lists both catalog entries, uid 10001, `/data` layout created.
+- Exception to FAST-04 (user-requested, not milestone D1): documented as D63.
+- Container logs were empty because uvicorn's startup line shares a logger with IP-bearing connection lines; app now logs one own startup line (home/device/frontend) — no personal data.
 
 ## Non-goal guards (checked every turn)
 - No database introduced. No client/user info introduced.

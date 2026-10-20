@@ -8,28 +8,13 @@ than inventing identifiers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-import yaml
-
+from app.checkpoints.catalog import CatalogEntry
 from app.core.device import DeviceInfo
 from app.verification.manifest import ManifestSummary
 
 SIZE_BUCKETS = ((1_000, "tiny"), (10_000, "small"), (100_000, "medium"))
-
-
-@dataclass(frozen=True)
-class CatalogEntry:
-    catalog_id: str
-    model_family: str
-    task_types: tuple[str, ...]
-    pretrained_on: str
-    license: str = ""
-    size_bytes: int = 0
-    min_vram_gb: float = 0.0
-    is_active: bool = True
 
 
 def size_bucket(num_samples: int) -> str:
@@ -37,37 +22,6 @@ def size_bucket(num_samples: int) -> str:
         if num_samples < ceiling:
             return name
     return "large"
-
-
-def load_catalog(path: Path) -> list[CatalogEntry]:
-    """Load ``checkpoints/catalog.yaml``; missing file means "not configured"."""
-    if not path.is_file():
-        return []
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
-        return []
-    entries: list[CatalogEntry] = []
-    for item in data or []:
-        if not isinstance(item, dict):
-            continue
-        name = item.get("name")
-        version = item.get("version")
-        if not name or not version:
-            continue
-        entries.append(
-            CatalogEntry(
-                catalog_id=f"{name}@{version}",
-                model_family=str(item.get("model_family", "")),
-                task_types=tuple(str(value) for value in item.get("task_types", []) or []),
-                pretrained_on=str(item.get("pretrained_on", "")),
-                license=str(item.get("license", "")),
-                size_bytes=int(item.get("size_bytes", 0) or 0),
-                min_vram_gb=float(item.get("min_vram_gb", 0.0) or 0.0),
-                is_active=bool(item.get("is_active", True)),
-            )
-        )
-    return entries
 
 
 def rank_checkpoints(
@@ -114,6 +68,10 @@ def rank_checkpoints(
                 "score": score,
                 "reason": "; ".join(reasons),
                 "local": False,
+                "size_bytes": entry.size_bytes,
+                "license": entry.license,
+                "sha256_verified": entry.verified,
+                "downloadable": entry.verified and not entry.source_uri.startswith("TODO(user)"),
             }
         )
     ranked.sort(key=lambda item: (-item["score"], item["catalog_id"]))
@@ -135,6 +93,7 @@ def recommend_hparams(
     task_type: str | None,
     model_family: str,
     device: DeviceInfo,
+    preset: str | None = None,
 ) -> dict[str, Any]:
     """Heuristic defaults shown in the Configure step (ASSUMPTION: not spec'd)."""
     total = sum(summary.class_counts.values()) or len(summary.rows)
@@ -155,8 +114,13 @@ def recommend_hparams(
         "tabular_regression": None,
     }.get(task_type or "", 0.001)
 
+    resolved_preset = preset or ("full" if device.is_gpu else "dev")
+    epochs = 50 if bucket != "tiny" else 20
+    if resolved_preset == "dev":
+        epochs = 2  # doc 14 §3.4: "1–2 epochs" so a laptop demo takes minutes
     hparams: dict[str, Any] = {
-        "epochs": 50 if bucket != "tiny" else 20,
+        "preset": resolved_preset,
+        "epochs": epochs,
         "batch_size": batch_size,
         "imgsz": imgsz,
         "freeze_backbone": bucket == "tiny",

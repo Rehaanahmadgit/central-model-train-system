@@ -194,12 +194,12 @@ def test_pipeline_runs_every_documented_check(tmp_path: Path) -> None:
         progress=lambda event: None,
     )
     assert [check["name"] for check in outcome["checks"]] == EXPECTED_CHECKS
-    # No GPU on the laptop → honest warning, still trainable [doc 14 §3.3].
-    assert outcome["status"] == "passed_with_warnings"
+    # On CPU the dev preset is chosen automatically, so no false GPU warning [doc 14 §3.3].
     assert outcome["can_train"] is True
     statuses = {check["name"]: check["status"] for check in outcome["checks"]}
     assert statuses["corrupt_files"] == "pass"
-    assert statuses["resource_estimate"] == "warn"
+    assert statuses["resource_estimate"] == "pass"
+    assert outcome["derived"]["preset"] == "dev"
 
 
 def test_pipeline_clean_pass_with_splits(tmp_path: Path) -> None:

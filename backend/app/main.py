@@ -21,6 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.health import router as health_router
 from app.api.router import api_router
+from app.checkpoints.catalog import ensure_catalog
 from app.core.config import Settings, get_settings
 from app.core.errors import ApiError
 from app.core.logging import reset_request_id, set_request_id, setup_logging
@@ -60,6 +61,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.exception("workspace unavailable at startup; /readyz will report not ready")
         else:
             workspace_ok = True
+            # Ship the default checkpoint catalog into the volume once [doc 14 §5].
+            try:
+                ensure_catalog(resolved.home)
+            except OSError:
+                logger.exception("could not install the default checkpoint catalog")
+            # uvicorn's own startup line is suppressed (it shares a logger with
+            # connection lines that contain client IPs), so log one ours instead.
+            logger.info(
+                "trainhub started: home=%s device=%s frontend=%s",
+                resolved.home,
+                resolved.device,
+                "built" if resolved.frontend_dist else "dev",
+            )
             # Crash recovery on startup [doc 03 §2.2, doc 04 §3 rule 6].
             try:
                 report = recover_workspace(resolved.home)

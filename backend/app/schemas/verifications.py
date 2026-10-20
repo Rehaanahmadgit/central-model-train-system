@@ -1,6 +1,6 @@
 """Verification schemas [doc 05 §3]."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -9,6 +9,8 @@ class VerificationCreate(BaseModel):
     dataset_hash: str = Field(min_length=64, max_length=64)
     model_family: str = Field(min_length=1, max_length=50)
     task_type: str | None = Field(default=None, max_length=50)
+    # auto: dev preset on CPU, full on GPU [doc 14 §3.3/§3.4].
+    preset: Literal["auto", "dev", "full"] = "auto"
 
 
 class VerificationStarted(BaseModel):

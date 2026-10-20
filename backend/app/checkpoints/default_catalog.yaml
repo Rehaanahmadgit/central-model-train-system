@@ -1,0 +1,35 @@
+# Shipped catalog defaults [doc 07 §2, doc 14 §5].
+#
+# Every outbound field below is a PLACEHOLDER: real URLs and sha256 values must
+# be supplied by the operator (TODO(user)). An entry with a placeholder sha256
+# is "unverified" and the resolver refuses to download it, because sha256
+# verification is mandatory [doc 10 §4]. Copy entries into
+# $TRAINHUB_HOME/checkpoints/catalog.override.yaml to add or replace them
+# without rebuilding the image.
+- name: rtdetr-l
+  version: "1.0"
+  model_family: rtdetr
+  task_types: [object_detection]
+  pretrained_on: coco
+  source_type: url
+  source_uri: "TODO(user): provide the official RT-DETR-L weights URL"
+  sha256: "TODO(user): provide the verified sha256"
+  size_bytes: 0
+  license: "TODO(user): provide the license"
+  min_vram_gb: 4
+  filename: rtdetr-l.pt
+  notes: "Detection backbone; COCO pretrained."
+
+- name: resnet50
+  version: imagenet-1k
+  model_family: resnet
+  task_types: [image_classification]
+  pretrained_on: imagenet
+  source_type: url
+  source_uri: "TODO(user): provide the official ResNet-50 weights URL"
+  sha256: "TODO(user): provide the verified sha256"
+  size_bytes: 0
+  license: "TODO(user): provide the license"
+  min_vram_gb: 2
+  filename: resnet50.pth
+  notes: "ImageNet-1k classification backbone."

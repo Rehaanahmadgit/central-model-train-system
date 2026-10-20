@@ -18,6 +18,9 @@ dependencies = [
     "uvicorn[standard]==0.54.0",
 ]
 
+[project.scripts]
+trainhub = "app.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "httpx2==2.13.1",

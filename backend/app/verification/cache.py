@@ -29,13 +29,20 @@ def _pointer_path(home: Path, key: str) -> Path:
     return home / "cache" / "verif" / f"{key}.json"
 
 
-def write_pointer(home: Path, key: str, verification_id: str) -> Path:
+def write_pointer(home: Path, key: str, verification_id: str, *, preset: str = "auto") -> Path:
+    """Write the pointer for the documented key [doc 06 §6].
+
+    ``preset`` is stored alongside (not inside) the key: the cached *dataset
+    facts* are preset-independent, but the hardware verdict is not, so a
+    different preset must not replay a stale "no GPU needed" result.
+    """
     path = _pointer_path(home, key)
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(
         path,
         {
             "verification_id": verification_id,
+            "preset": preset,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "schema_version": CACHE_SCHEMA_VERSION,
         },
@@ -56,10 +63,12 @@ def read_pointer(home: Path, key: str) -> dict[str, Any] | None:
     return data
 
 
-def lookup_cached(home: Path, key: str) -> dict[str, Any] | None:
+def lookup_cached(home: Path, key: str, *, preset: str = "auto") -> dict[str, Any] | None:
     """Return the stored verification record for a finished cache hit."""
     pointer = read_pointer(home, key)
     if pointer is None:
+        return None
+    if str(pointer.get("preset") or "auto") != preset:
         return None
     verification_id = str(pointer["verification_id"])
     record_path = home / "verifications" / verification_id / "verification.json"

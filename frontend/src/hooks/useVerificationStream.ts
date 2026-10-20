@@ -36,8 +36,23 @@ export interface Derived {
   };
   object_stats?: Record<string, unknown>;
   recommended_hparams?: Record<string, unknown>;
-  recommended_checkpoints?: Array<Record<string, unknown>>;
+  recommended_checkpoints?: RecommendedCheckpoint[];
   checkpoint_catalog_configured?: boolean;
+  checkpoint_catalog_ready?: number;
+  preset?: string | null;
+  preset_requested?: string | null;
+}
+
+export interface RecommendedCheckpoint {
+  catalog_id: string;
+  score: number;
+  reason: string;
+  local: boolean;
+  local_size_bytes?: number | null;
+  size_bytes?: number;
+  license?: string;
+  sha256_verified?: boolean;
+  downloadable?: boolean;
 }
 
 export interface VerificationStream {

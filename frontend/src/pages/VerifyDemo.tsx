@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { CheckList } from "../components/CheckList";
+import { RecommendedCheckpoint } from "../components/RecommendedCheckpoint";
 import { SummaryCards } from "../components/SummaryCards";
 import {
   useVerificationStream,
@@ -192,6 +193,7 @@ export function VerifyDemo() {
         )}
       </div>
       <SummaryCards derived={finalDerived ?? stream.derived} />
+      <RecommendedCheckpoint derived={finalDerived ?? stream.derived} />
       <CheckList checks={finalChecks ?? stream.checks} />
     </section>
   );

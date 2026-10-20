@@ -51,7 +51,6 @@ from app.verification.checks.structural import (
 from app.verification.context import CheckResult, VerificationContext
 from app.verification.manifest import ManifestSummary, build_manifest
 from app.verification.recommend import (
-    load_catalog,
     rank_checkpoints,
     recommend_hparams,
     size_bucket,
@@ -120,9 +119,37 @@ def _prepare(ctx: VerificationContext, home: Path | None) -> None:
     if summary.class_counts:
         ctx.facts.setdefault("class_counts", dict(summary.class_counts))
         ctx.facts.setdefault("class_names", list(summary.class_names))
-    ctx.facts["checkpoint_catalog_configured"] = bool(
-        home is not None and (home / "checkpoints" / "catalog.yaml").is_file()
-    )
+    if home is not None:
+        from app.checkpoints.catalog import CatalogError, load_catalog
+
+        try:
+            entries = load_catalog(home)
+        except CatalogError:
+            entries = []
+        ctx.facts["checkpoint_catalog_configured"] = bool(entries)
+        ctx.facts["checkpoint_catalog_ready"] = sum(1 for entry in entries if entry.verified)
+        ctx.facts["catalog_entries"] = entries
+    else:
+        ctx.facts["checkpoint_catalog_configured"] = False
+        ctx.facts["checkpoint_catalog_ready"] = 0
+
+
+def _read_checkpoint_index(ctx: VerificationContext) -> dict[str, Any]:
+    """Local availability comes from index.json [doc 04 §1]; read-only here."""
+    catalog_path = ctx.facts.get("catalog_path")
+    if not isinstance(catalog_path, str):
+        return {}
+    index_path = Path(catalog_path).parent / "index.json"
+    if not index_path.is_file():
+        return {}
+    try:
+        from app.storage.atomic import read_json
+
+        data = read_json(index_path)
+    except (OSError, ValueError):
+        return {}
+    entries = data.get("entries") if isinstance(data, dict) else None
+    return entries if isinstance(entries, dict) else {}
 
 
 def _derived(
@@ -135,9 +162,9 @@ def _derived(
         task_type=ctx.facts.get("task_type"),
         model_family=ctx.model_family,
         device=device,
+        preset=str(ctx.facts.get("preset") or "") or None,
     )
-    catalog_path = ctx.facts.get("catalog_path")
-    catalog = load_catalog(Path(catalog_path)) if isinstance(catalog_path, str) else []
+    catalog = list(ctx.facts.get("catalog_entries") or [])
     recommended = rank_checkpoints(
         catalog,
         task_type=ctx.facts.get("task_type"),
@@ -145,6 +172,11 @@ def _derived(
         bucket=size_bucket(total),
         device=device,
     )
+    local_index = _read_checkpoint_index(ctx)
+    for item in recommended:
+        record = local_index.get(str(item["catalog_id"])) or {}
+        item["local"] = record.get("status") == "ready"
+        item["local_size_bytes"] = record.get("size") if item["local"] else None
     return {
         "task_type": ctx.facts.get("task_type"),
         "task_detection_reason": ctx.facts.get("task_detection_reason"),
@@ -162,6 +194,9 @@ def _derived(
         "recommended_hparams": hparams,
         "recommended_checkpoints": recommended,
         "checkpoint_catalog_configured": bool(ctx.facts.get("checkpoint_catalog_configured")),
+        "checkpoint_catalog_ready": int(ctx.facts.get("checkpoint_catalog_ready") or 0),
+        "preset": ctx.facts.get("preset"),
+        "preset_requested": ctx.facts.get("preset_requested"),
         "dataset_hash": ctx.dataset_hash,
         "verifier_version": VERIFIER_VERSION,
     }
@@ -173,6 +208,7 @@ def run_pipeline(
     model_family: str,
     task_type: str | None,
     *,
+    preset: str = "auto",
     sample_cap: int,
     check_timeout_seconds: float,
     progress: Progress,
@@ -189,6 +225,13 @@ def run_pipeline(
         verifier_version=VERIFIER_VERSION,
         sample_cap=sample_cap,
     )
+    resolved_device = device or resolve_device("auto")
+    # "auto" means: use the CPU dev preset unless a GPU is actually available [doc 14 §3.3].
+    resolved_preset = preset if preset in ("dev", "full") else (
+        "full" if resolved_device.is_gpu else "dev"
+    )
+    ctx.facts["preset"] = resolved_preset
+    ctx.facts["preset_requested"] = preset
     if home is not None:
         ctx.facts["catalog_path"] = str(home / "checkpoints" / "catalog.yaml")
 
@@ -229,7 +272,6 @@ def run_pipeline(
             if any(result.status == "warn" for result in results)
             else "passed"
         )
-    resolved_device = device or resolve_device("auto")
     return {
         "status": status,
         "can_train": status != "failed",

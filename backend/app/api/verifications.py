@@ -47,6 +47,7 @@ async def create(body: VerificationCreate, request: Request) -> dict[str, Any]:
         dataset_hash=body.dataset_hash,
         model_family=body.model_family,
         task_type=body.task_type,
+        preset=body.preset,
     )
 
 

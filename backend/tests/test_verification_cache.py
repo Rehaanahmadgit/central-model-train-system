@@ -19,16 +19,11 @@ from fixtures.make_datasets import (
 )
 from helpers import upload_dataset
 
+from app.checkpoints.catalog import CatalogEntry, load_catalog
 from app.core.device import DeviceInfo, resolve_device
 from app.verification.cache import cache_key, read_pointer
 from app.verification.manifest import build_manifest
-from app.verification.recommend import (
-    CatalogEntry,
-    load_catalog,
-    rank_checkpoints,
-    recommend_hparams,
-    size_bucket,
-)
+from app.verification.recommend import rank_checkpoints, recommend_hparams, size_bucket
 from app.verification.runner import run_pipeline
 from app.verification.tasks import detect_task
 
@@ -182,7 +177,10 @@ def test_recommend_hparams_uses_gpu_batch() -> None:
 
 
 def test_catalog_missing_returns_empty_and_no_invented_ids(tmp_path: Path) -> None:
-    assert load_catalog(tmp_path / "catalog.yaml") == []
+    # No workspace home → no catalog is consulted, so nothing is recommended.
+    assert load_catalog(tmp_path) == [] or all(
+        not entry.verified for entry in load_catalog(tmp_path)
+    )
     raw = materialize(tmp_path / "raw", build_yolo())
     outcome = _run(raw)
     assert outcome["derived"]["recommended_checkpoints"] == []
@@ -190,7 +188,8 @@ def test_catalog_missing_returns_empty_and_no_invented_ids(tmp_path: Path) -> No
 
 
 def test_catalog_ranking_follows_doc_rules(tmp_path: Path) -> None:
-    catalog_file = tmp_path / "catalog.yaml"
+    (tmp_path / "checkpoints").mkdir(parents=True, exist_ok=True)
+    catalog_file = tmp_path / "checkpoints" / "catalog.yaml"
     catalog_file.write_text(
         yaml.safe_dump(
             [
@@ -214,7 +213,7 @@ def test_catalog_ranking_follows_doc_rules(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    catalog = load_catalog(catalog_file)
+    catalog = load_catalog(tmp_path)
     assert {entry.catalog_id for entry in catalog} == {"rtdetr-l@1.0", "resnet50@imagenet-1k"}
     ranked = rank_checkpoints(
         catalog,
@@ -261,12 +260,19 @@ def test_catalog_present_flags_config_in_report(tmp_path: Path) -> None:
 
 def test_catalog_entry_shape() -> None:
     entry = CatalogEntry(
-        catalog_id="x@1",
+        name="x",
+        version="1",
         model_family="resnet",
         task_types=("image_classification",),
         pretrained_on="",
+        source_type="url",
+        source_uri="https://example.invalid/x.bin",
+        sha256=None,
+        size_bytes=0,
     )
+    assert entry.catalog_id == "x@1"
     assert entry.is_active is True
+    assert entry.verified is False
 
 
 # --- device abstraction -----------------------------------------------------
@@ -345,3 +351,64 @@ def test_cache_miss_for_different_model_family(client) -> None:
     ).json()
     assert second["cached"] is False
     assert second["id"] != first["id"]
+
+
+# --- preset behaviour (doc 14 §3.3) ----------------------------------------
+
+
+def test_dev_preset_removes_false_gpu_warning(client) -> None:
+    """A CPU-capable preset must not warn about a missing GPU [doc 14 §3.3]."""
+    completed = upload_dataset(client, "yolo.zip", to_zip(build_yolo()))
+    body = client.post(
+        "/api/v1/verifications",
+        json={
+            "dataset_hash": completed["dataset_hash"],
+            "model_family": "rtdetr",
+            "preset": "dev",
+        },
+    ).json()
+    finished = _wait(client, body["id"])
+    check = next(item for item in finished["checks"] if item["name"] == "resource_estimate")
+    assert check["status"] == "pass"
+    assert finished["derived"]["preset"] == "dev"
+    assert finished["derived"]["recommended_hparams"]["epochs"] == 2
+
+
+def test_full_preset_warns_without_gpu(client) -> None:
+    """Asking for the production preset on a CPU box is a real warning."""
+    completed = upload_dataset(client, "yolo.zip", to_zip(build_yolo()))
+    body = client.post(
+        "/api/v1/verifications",
+        json={
+            "dataset_hash": completed["dataset_hash"],
+            "model_family": "rtdetr",
+            "preset": "full",
+        },
+    ).json()
+    finished = _wait(client, body["id"])
+    check = next(item for item in finished["checks"] if item["name"] == "resource_estimate")
+    assert check["status"] == "warn"
+    assert "GPU" in check["message"]
+
+
+def test_preset_change_is_not_a_cache_hit(client) -> None:
+    """A dev verdict must never be replayed for a full-preset request."""
+    completed = upload_dataset(client, "yolo.zip", to_zip(build_yolo()))
+    first = client.post(
+        "/api/v1/verifications",
+        json={
+            "dataset_hash": completed["dataset_hash"],
+            "model_family": "rtdetr",
+            "preset": "dev",
+        },
+    ).json()
+    _wait(client, first["id"])
+    second = client.post(
+        "/api/v1/verifications",
+        json={
+            "dataset_hash": completed["dataset_hash"],
+            "model_family": "rtdetr",
+            "preset": "full",
+        },
+    ).json()
+    assert second["cached"] is False

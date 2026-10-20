@@ -53,6 +53,7 @@ def create_verification(
     dataset_hash: str,
     model_family: str,
     task_type: str | None = None,
+    preset: str = "auto",
 ) -> dict[str, Any]:
     if not dataset_exists(home, dataset_hash):
         raise ApiError(404, "DATASET_NOT_FOUND", f"dataset {dataset_hash} does not exist")
@@ -64,7 +65,7 @@ def create_verification(
         )
     # Cache hit → return the stored report instead of recomputing (US-06) [doc 06 §2].
     key = cache_key(dataset_hash, model_family, VERIFIER_VERSION)
-    cached = lookup_cached(home, key)
+    cached = lookup_cached(home, key, preset=preset)
     if cached is not None:
         cached_id = str(cached.get("id"))
         return {
@@ -105,6 +106,7 @@ def create_verification(
         dataset_hash,
         model_family,
         task_type,
+        preset=preset,
         sample_cap=settings.verify_sample_cap,
         check_timeout_seconds=settings.verify_check_timeout_seconds,
     )

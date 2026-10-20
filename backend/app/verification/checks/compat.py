@@ -104,7 +104,13 @@ class InputRequirementsCheck(Check):
 
 
 class ResourceEstimateCheck(Check):
-    """Estimate VRAM/time and flag hardware mismatch [doc 06 §4, doc 14 §3.3]."""
+    """Hardware fit: only warn when the chosen mode really needs a GPU [doc 14 §3.3].
+
+    A CPU-capable dev preset is a legitimate way to exercise the full flow on a
+    laptop, so it passes. The warning appears only when the full (production)
+    configuration is requested without a GPU, or the model family has no
+    CPU-capable path at all.
+    """
 
     name = "resource_estimate"
     severity = "warn"
@@ -118,36 +124,48 @@ class ResourceEstimateCheck(Check):
         summary = _summary(ctx)
         samples = len(summary.rows) if summary is not None else 0
         bucket = "tiny" if samples < 1_000 else "small" if samples < 10_000 else "medium"
-        needs_gpu = ctx.model_family in GPU_REQUIRED_FAMILIES
+        preset = str(ctx.facts.get("preset") or ("full" if device.is_gpu else "dev"))
+        needs_gpu_in_full = ctx.model_family in GPU_REQUIRED_FAMILIES
         details = {
             "device": device.as_dict(),
+            "preset": preset,
+            "preset_requested": ctx.facts.get("preset_requested", "auto"),
             "samples": samples,
             "dataset_bucket": bucket,
-            "needs_gpu_family": needs_gpu,
+            "needs_gpu_in_full_mode": needs_gpu_in_full,
         }
-        if needs_gpu and not device.is_gpu:
+
+        if device.is_gpu:
             return CheckResult(
                 name=self.name,
                 severity=self.severity,
-                status="warn",
+                status="pass",
+                message=f"{samples} samples on {device.name} (full preset); {bucket} bucket",
+                details=details,
+            )
+        if preset == "dev":
+            # CPU dev preset: tiny images, few epochs, small batch [doc 14 §3.4].
+            return CheckResult(
+                name=self.name,
+                severity=self.severity,
+                status="pass",
                 message=(
-                    "This model needs a GPU; this machine has none "
-                    f"({device.reason}). A CPU dev preset is required."
+                    f"CPU dev preset selected ({samples} samples, {bucket} bucket): "
+                    "small images and few epochs, no GPU required"
                 ),
                 details=details,
-                fix_hint=(
-                    "Choose a CPU-capable preset for a demo run, or deploy the GPU image on a "
-                    "CUDA server [doc 14 §3.3]."
-                ),
             )
         return CheckResult(
             name=self.name,
             severity=self.severity,
-            status="pass",
+            status="warn",
             message=(
-                f"{samples} samples on {device.kind}"
-                f"{' (' + device.name + ')' if device.is_gpu else ''}; "
-                f"{bucket} bucket"
+                "the full preset for this model needs a GPU; this machine has none "
+                f"({device.reason})"
             ),
             details=details,
+            fix_hint=(
+                "Re-verify with the dev preset for a CPU run, or deploy the GPU image "
+                "on a CUDA server [doc 14 §3.3]."
+            ),
         )
