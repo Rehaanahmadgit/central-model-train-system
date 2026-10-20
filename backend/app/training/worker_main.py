@@ -100,6 +100,17 @@ def _run(record: dict[str, Any], home: Path, run_id: str) -> int:
     )
     emit("state", {"from": "preparing", "to": "running"})
     plugin.prepare(ctx)
+    resume_from = record.get("resume_from")
+    if resume_from:
+        resume_path = Path(str(resume_from))
+        if resume_path.is_file():
+            emit("log", {"level": "INFO", "message": f"resuming from {resume_path.name}"})
+            plugin.resume(ctx, resume_path)
+        else:
+            emit(
+                "log",
+                {"level": "WARNING", "message": f"resume checkpoint missing: {resume_path}"},
+            )
     result = plugin.train(ctx)
     if ctx.should_stop():
         emit("state", {"from": "running", "to": "stopped"})

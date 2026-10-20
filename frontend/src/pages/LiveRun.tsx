@@ -8,6 +8,7 @@ interface LiveRunProps {
   runId: string;
   theme: "light" | "dark";
   onBack: () => void;
+  onNavigate: (runId: string) => void;
 }
 
 interface RunInfo {
@@ -27,6 +28,14 @@ interface RunInfo {
   best: { metric?: string | null; value?: number; epoch?: number };
   failure?: { reason?: string | null; details?: string | null } | null;
 }
+
+const FAILURE_HINTS: Record<string, string> = {
+  WORKER_LOST: "The training process stopped responding or was killed. Check the container's memory/CPU limits, then retry or resume.",
+  OOM: "Out of memory. Reduce the batch size (or imgsz) in Configure and retry.",
+  NAN_LOSS: "Loss became NaN/Inf. Lower the learning rate, check the data for corrupt values, then retry.",
+  DATA_ERROR: "The dataset or configuration is invalid. Read the message, fix it, and re-run verification.",
+  UNKNOWN: "An unexpected error occurred. See the run log for the traceback.",
+};
 
 const STATE_COLORS: Record<string, string> = {
   queued: "bg-text-secondary",
@@ -60,7 +69,7 @@ function StatTile({ label, value, hint }: { label: string; value: string; hint?:
 
 // Live Run page: audit-grade tracker [doc 09 §3]. State is restored on reload
 // by the snapshot + last_seq resume in useRunStream [doc 05 §8].
-export function LiveRun({ runId, theme, onBack }: LiveRunProps) {
+export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
   const stream = useRunStream(runId);
   const [info, setInfo] = useState<RunInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -133,6 +142,19 @@ export function LiveRun({ runId, theme, onBack }: LiveRunProps) {
     await apiFetch<unknown>(`/api/v1/runs/${runId}/${action}`, { method: "POST" });
   }
 
+  async function resumeInterrupted(): Promise<void> {
+    setLoadError(null);
+    try {
+      const retried = await apiFetch<{ id: string }>(`/api/v1/runs/${runId}/retry`, {
+        method: "POST",
+        body: JSON.stringify({ resume_from_last: true }),
+      });
+      onNavigate(retried.id);
+    } catch (exc) {
+      setLoadError(exc instanceof Error ? exc.message : "Could not resume the run.");
+    }
+  }
+
   const live = ["queued", "preparing", "running", "paused", "evaluating"].includes(state);
 
   return (
@@ -147,6 +169,15 @@ export function LiveRun({ runId, theme, onBack }: LiveRunProps) {
         </span>
         <ConnectionIndicator status={stream.status} />
         <span className="ml-auto flex gap-2">
+          {state === "interrupted" && (
+            <button
+              type="button"
+              onClick={() => void resumeInterrupted()}
+              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-on-accent hover:bg-accent-hover"
+            >
+              Resume
+            </button>
+          )}
           {live && (
             <>
               <button
@@ -238,9 +269,11 @@ export function LiveRun({ runId, theme, onBack }: LiveRunProps) {
                 </div>
               ))}
               {info.failure?.reason && (
-                <div className="mt-2 flex justify-between gap-2 text-danger">
-                  <dt>Failure</dt>
-                  <dd className="text-right">{info.failure.reason}</dd>
+                <div className="mt-2 rounded-md border border-danger p-2 text-danger">
+                  <div className="font-semibold">Failure: {info.failure.reason}</div>
+                  <div className="mt-1 text-xs text-text-secondary">
+                    {FAILURE_HINTS[info.failure.reason] ?? "See the run log for details."}
+                  </div>
                 </div>
               )}
             </dl>

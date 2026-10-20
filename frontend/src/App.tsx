@@ -41,7 +41,12 @@ export default function App() {
         <main className="flex flex-1 flex-col gap-8 overflow-auto p-8">
           {openRunId ? (
             <Suspense fallback={<p className="text-text-secondary">Loading live run…</p>}>
-              <LiveRun runId={openRunId} theme={theme} onBack={() => setOpenRunId(null)} />
+              <LiveRun
+                runId={openRunId}
+                theme={theme}
+                onBack={() => setOpenRunId(null)}
+                onNavigate={(runId) => setOpenRunId(runId)}
+              />
             </Suspense>
           ) : view === "runs" ? (
             <section className="flex flex-col gap-4">

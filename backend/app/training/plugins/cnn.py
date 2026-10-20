@@ -8,6 +8,7 @@ seconds. No pretrained checkpoint is downloaded.
 
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,11 @@ class CNNTrainer(TrainerPlugin):
         self._model.to(self._device)
         self._optimizer = torch.optim.Adam(self._model.parameters(), lr=self._lr)
         self._criterion = nn.CrossEntropyLoss()
+        self._start_epoch = 1
+        self._best_accuracy = -1.0
+        self._patience = int(ctx.config.get("patience", 3) or 3)
+        self._min_delta = float(ctx.config.get("min_delta", 0.0) or 0.0)
+        self._epochs_since_best = 0
         ctx.emit_log(
             "INFO",
             f"prepared {len(train)} train / {len(val)} val images, {len(classes)} classes "
@@ -118,29 +124,32 @@ class CNNTrainer(TrainerPlugin):
         )
 
     def train(self, ctx: RunContext) -> TrainResult:
-        best_accuracy = -1.0
-        for epoch in range(1, self._epochs + 1):
+        for epoch in range(self._start_epoch, self._epochs + 1):
             if ctx.should_stop():
                 break
             self._model.train()
             running_loss = 0.0
             correct = 0
             seen = 0
-            for batch_index, batch in enumerate(_batches(self._train_samples, self._batch_size)):
+            for batch in _batches(self._train_samples, self._batch_size):
                 if ctx.should_pause():
                     ctx.wait_if_paused()
                 if ctx.should_stop():
                     break
                 loss, hits, count = self._train_batch(ctx, batch)
+                # NaN/Inf guard [doc 08 §5]: stop with a clear reason.
+                if math.isnan(loss) or math.isinf(loss):
+                    raise ValueError(f"nan/inf loss at epoch {epoch}")
                 running_loss += loss * count
                 correct += hits
                 seen += count
                 step = (epoch - 1) * len(self._train_samples) + seen
                 ctx.emit_metric("train/loss", float(running_loss / seen), step, epoch, "train")
                 time.sleep(float(ctx.config.get("batch_delay", 0.0)))
-                del batch_index
 
-            val_loss, val_accuracy, val_count = self._evaluate(ctx)
+            val_loss, val_accuracy, _count = self._evaluate(ctx)
+            if math.isnan(val_loss):
+                raise ValueError(f"nan validation loss at epoch {epoch}")
             train_accuracy = correct / max(seen, 1)
             ctx.emit_metric(
                 "train/accuracy",
@@ -151,21 +160,32 @@ class CNNTrainer(TrainerPlugin):
             )
             ctx.emit_metric("val/loss", float(val_loss), epoch, epoch, "val")
             ctx.emit_metric("val/accuracy", float(val_accuracy), epoch, epoch, "val")
+            improved = val_accuracy > self._best_accuracy + self._min_delta
             ctx.emit_log(
                 "INFO",
                 f"epoch {epoch}/{self._epochs} train_acc={train_accuracy:.4f} "
                 f"val_acc={val_accuracy:.4f} val_loss={val_loss:.4f}",
             )
-            self._save(ctx, epoch, is_best=val_accuracy > best_accuracy)
-            best_accuracy = max(best_accuracy, val_accuracy)
+            self._save(ctx, epoch, is_best=improved)
+            if improved:
+                self._best_accuracy = val_accuracy
+                self._epochs_since_best = 0
+            else:
+                self._epochs_since_best += 1
+                if self._patience > 0 and self._epochs_since_best >= self._patience:
+                    ctx.emit_log(
+                        "INFO",
+                        f"early stopping: val/accuracy did not improve for {self._patience} epochs",
+                    )
+                    break
         return TrainResult(
             best={
                 "metric": "val/accuracy",
-                "value": round(best_accuracy, 4),
-                "epoch": self._epochs,
+                "value": round(max(self._best_accuracy, 0.0), 4),
+                "epoch": self._start_epoch - 1,
             },
-            epochs=self._epochs,
-            note=f"val/accuracy={best_accuracy:.4f}",
+            epochs=epoch,
+            note=f"val/accuracy={max(self._best_accuracy, 0.0):.4f}",
         )
 
     # -- helpers ------------------------------------------------------------
@@ -223,12 +243,36 @@ class CNNTrainer(TrainerPlugin):
         checkpoints = ctx.output_dir.parent / "checkpoints"
         checkpoints.mkdir(parents=True, exist_ok=True)
         last = checkpoints / "last.ckpt"
-        torch.save(self._model.state_dict(), last)
+        # Full state for exact resume [doc 08 §4]: model + optimizer + epoch.
+        payload = {
+            "schema_version": 1,
+            "epoch": epoch,
+            "model_state": self._model.state_dict(),
+            "optimizer_state": self._optimizer.state_dict(),
+            "best_accuracy": self._best_accuracy,
+        }
+        torch.save(payload, last)
         ctx.save_checkpoint(last, is_best=False, metrics={"epoch": epoch})
         if is_best:
             best = checkpoints / "best.ckpt"
-            torch.save(self._model.state_dict(), best)
+            torch.save(payload, best)
             ctx.save_checkpoint(best, is_best=True, metrics={"epoch": epoch})
+
+    def resume(self, ctx: RunContext, checkpoint_path: Path) -> None:
+        """Exact resume from last.ckpt: restore model + optimizer + epoch [doc 08 §4]."""
+        payload = torch.load(checkpoint_path, map_location=self._device, weights_only=True)
+        if isinstance(payload, dict) and "model_state" in payload:
+            self._model.load_state_dict(payload["model_state"])
+            self._optimizer.load_state_dict(payload["optimizer_state"])
+            self._start_epoch = int(payload.get("epoch", 0)) + 1
+            self._best_accuracy = float(payload.get("best_accuracy", -1.0))
+            ctx.emit_log(
+                "INFO",
+                f"resumed from {checkpoint_path.name} at epoch {self._start_epoch}",
+            )
+        else:
+            self._model.load_state_dict(payload)  # legacy plain state_dict
+            ctx.emit_log("INFO", f"loaded weights from {checkpoint_path.name} (no optimizer state)")
 
     def _load(self, path: Path) -> Any | None:
         try:

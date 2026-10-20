@@ -104,3 +104,13 @@ Every decision with date, reason, source doc section. `PENDING` = proposed, awai
 | D85 | Tests >3 s marked `@pytest.mark.slow` (7 total: 4 real-trainer e2e + checkpoint-retry + 2 crash tests). Fast gate back to **215 tests / 31.0 s**; `verify-full` = **222 tests / 68.8 s** | doc 16 FAST-02, user instruction | accepted |
 | D86 | Playwright e2e smoke (`make e2e`, `frontend/e2e/wizard.spec.ts`, `@playwright/test@1.64.1` declared only) written but **NOT RUN** — Chromium is not installed and was not downloaded without approval | doc 11 §1, user instruction | accepted |
 | D87 | 5-step wizard (Dataset → Model → Verify → Configure → Train) with always-visible stepper; Home "New training" opens it; on Start Training the app navigates straight to the LiveRun page | doc 09 §2, user instruction | accepted |
+
+## 2026-10-20 — S11 reliability + resume
+| # | Decision | Reason / source | Status |
+|---|---|---|---|
+| D88 | `@playwright/test@1.64.1` is a devDependency with an **exact** pin (not `^`); `package-lock.json` synced via `npm install -D`, then `npm ci` in a clean dir passes. Chromium (browser) is only for `make e2e`, never baked into the image | user instruction, doc 16 DIST-09 | accepted |
+| D89 | Log terminal stays **windowed** (useRunStream caps at 200 lines; ≤400 rendered). No react-window: virtualizing ~200 rows adds a dependency + complexity for no measurable gain at this cap. If unbounded logs ever arrive, the cap — not DOM size — is the binding constraint | user instruction, doc 09 §3.3 | accepted |
+| D90 | **Exact resume** for CNN: `last.ckpt` stores `{schema_version, epoch, model_state, optimizer_state, best_accuracy}`; `resume()` restores model + optimizer + epoch. RandomForest saves no checkpoints (single fit), so `resume_from_last` for RF is a 409 `RESUME_UNAVAILABLE` — documented limitation | doc 08 §4, user instruction | accepted |
+| D91 | NaN/Inf guard (train + val loss) → `NAN_LOSS` failure; early stopping with `patience=3`, `min_delta=0.0` on `val/accuracy` | doc 08 §5 | accepted |
+| D92 | `POST /runs/{id}/retry` with `{resume_from_last, name?, config?}`: new run linked by `parent_run_id`, inherits parent config (overridable), and the worker calls `plugin.resume()` on the parent's `last.ckpt` when `resume_from` is set | doc 05 §5 | accepted |
+| D93 | Pause→resume→stop and exact-resume are tested at the **API level** (pytest `@slow`), not a second Playwright test — browser pause timing is flaky and adds no coverage beyond the real-subprocess API test | user instruction ("agar 15s ke andar ho, warna API level") | accepted |

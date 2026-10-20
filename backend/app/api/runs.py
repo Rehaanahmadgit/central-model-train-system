@@ -12,7 +12,7 @@ from app.core.config import Settings
 from app.core.errors import ApiError
 from app.core.pagination import paginate
 from app.realtime.events import RunEventLog
-from app.schemas.runs import RunCreate, RunOut
+from app.schemas.runs import RunCreate, RunOut, RunRetry
 from app.services import runs as runs_service
 from app.training.job_manager import JobManager, JobNotFoundError
 
@@ -63,6 +63,31 @@ def list_runs(request: Request, page: int = 1, page_size: int = 20) -> dict[str,
 @router.get("/{run_id}")
 def get(run_id: str, request: Request) -> dict[str, Any]:
     return runs_service.get_run(_home(request), _check_run_id(run_id))
+
+
+@router.post("/{run_id}/retry", response_model=RunOut, status_code=202)
+async def retry(run_id: str, body: RunRetry, request: Request) -> dict[str, Any]:
+    """New run linked by parent_run_id; optionally resumes from last.ckpt [doc 05 §5]."""
+    parent = runs_service.get_run(_home(request), _check_run_id(run_id))
+    if parent.get("state") in ("queued", "preparing", "running", "paused", "evaluating"):
+        raise ApiError(409, "RUN_ACTIVE", "cannot retry a run that is still active")
+    record = runs_service.create_run(
+        _home(request),
+        cast(Settings, request.app.state.settings),
+        verification_id=str(parent.get("verification_id") or ""),
+        name=body.name or f"{parent.get('name', 'run')}-retry",
+        config=body.config,
+        checkpoint_catalog_id=(
+            parent.get("checkpoint") or {}
+        ).get("catalog_id")
+        if isinstance(parent.get("checkpoint"), dict)
+        else None,
+        from_scratch=False,
+        parent_run_id=run_id,
+        resume_from_last=body.resume_from_last,
+    )
+    await _manager(request).start(str(record["id"]))
+    return record
 
 
 @router.post("/{run_id}/pause")

@@ -272,3 +272,87 @@ def test_restart_marks_running_run_interrupted(tmp_path: Path) -> None:
     with TestClient(create_app(Settings(home=home, log_level="DEBUG"))) as client:
         assert client.get("/healthz").status_code == 200
     assert read_json(home / "runs" / "run_dead" / "run.json")["state"] == "interrupted"
+
+
+@pytest.mark.slow
+def test_pause_then_resume_then_stop(client: TestClient, home: Path) -> None:
+    """Pause/resume flows through the state machine to the real subprocess [doc 08 §3]."""
+    run_id = _start_run(
+        client,
+        entries=build_classification(per_class=8, size=(32, 32)),
+        model_family="cnn",
+        config={"epochs": 10_000, "batch_size": 2, "batch_delay": 0.05},
+    )
+    # Wait until running, then pause and confirm the state flips to paused.
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if client.get(f"/api/v1/runs/{run_id}").json()["state"] == "running":
+            break
+        time.sleep(0.1)
+    assert client.post(f"/api/v1/runs/{run_id}/pause").status_code == 200
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if client.get(f"/api/v1/runs/{run_id}").json()["state"] == "paused":
+            break
+        time.sleep(0.1)
+    assert client.get(f"/api/v1/runs/{run_id}").json()["state"] == "paused"
+
+    # Resume → back to running.
+    assert client.post(f"/api/v1/runs/{run_id}/resume").status_code == 200
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if client.get(f"/api/v1/runs/{run_id}").json()["state"] == "running":
+            break
+        time.sleep(0.1)
+    assert client.get(f"/api/v1/runs/{run_id}").json()["state"] == "running"
+
+    assert client.post(f"/api/v1/runs/{run_id}/stop").status_code == 200
+    body = _wait_run(client, run_id, timeout=60)
+    assert body["state"] == "stopped"
+    assert body["failure"]["reason"] is None
+
+
+@pytest.mark.slow
+def test_exact_resume_from_last_checkpoint(client: TestClient, home: Path) -> None:
+    """A retry with resume_from_last continues from the parent's last.ckpt [doc 08 §4]."""
+    first_id = _start_run(
+        client,
+        entries=build_classification(per_class=4, size=(32, 32)),
+        model_family="cnn",
+        config={"epochs": 1, "batch_size": 2},
+    )
+    first = _wait_run(client, first_id)
+    assert first["state"] == "completed"
+    assert (home / "runs" / first_id / "checkpoints" / "last.ckpt").is_file()
+
+    response = client.post(
+        f"/api/v1/runs/{first_id}/retry",
+        json={"resume_from_last": True, "config": {"epochs": 2}},
+    )
+    assert response.status_code == 202, response.text
+    second_id = response.json()["id"]
+
+    second = _wait_run(client, second_id)
+    assert second["state"] == "completed", second
+    assert second["parent_run_id"] == first_id
+    # The worker logged the exact resume and continued past the parent's epoch.
+    records = list(read_jsonl(home / "runs" / second_id / "events.jsonl"))
+    assert any(
+        "resumed from last.ckpt" in r["data"]["message"]
+        for r in records
+        if r["type"] == "log"
+    )
+    assert any(r["type"] == "metric" and r["data"].get("epoch") == 2 for r in records)
+
+
+@pytest.mark.slow
+def test_rf_resume_unavailable_without_checkpoint(client: TestClient, home: Path) -> None:
+    """RandomForest saves no checkpoints; resume must be rejected, not silently skipped."""
+    first_id = _start_run(client, entries=build_tabular(rows=40), model_family="random_forest")
+    first = _wait_run(client, first_id)
+    assert first["state"] == "completed"
+    response = client.post(
+        f"/api/v1/runs/{first_id}/retry", json={"resume_from_last": True}
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "RESUME_UNAVAILABLE"

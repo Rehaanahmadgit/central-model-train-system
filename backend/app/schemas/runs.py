@@ -22,3 +22,9 @@ class RunOut(BaseModel):
     task_type: str | None = None
     queued_at: str | None = None
     schema_version: int
+
+
+class RunRetry(BaseModel):
+    resume_from_last: bool = False
+    name: str | None = None
+    config: dict[str, Any] | None = None

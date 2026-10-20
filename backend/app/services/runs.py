@@ -35,6 +35,8 @@ def create_run(
     config: dict[str, Any] | None,
     checkpoint_catalog_id: str | None,
     from_scratch: bool,
+    parent_run_id: str | None = None,
+    resume_from_last: bool = False,
 ) -> dict[str, Any]:
     del settings
     verification = read_json(home / "verifications" / verification_id / "verification.json")
@@ -55,6 +57,23 @@ def create_run(
         raise ApiError(409, "UNKNOWN_MODEL_FAMILY", f"no trainer for model family {model_family!r}")
 
     resolved_config = dict(plugin.default_hparams)
+    resume_from: Path | None = None
+    if parent_run_id:
+        parent = read_json(home / "runs" / parent_run_id / "run.json")
+        if not isinstance(parent, dict):
+            raise ApiError(404, "RUN_NOT_FOUND", f"parent run {parent_run_id} does not exist")
+        # Resume inherits the parent's resolved config unless overridden [doc 05 §5].
+        resolved_config = dict(parent.get("config") or resolved_config)
+        if resume_from_last:
+            candidate = home / "runs" / parent_run_id / "checkpoints" / "last.ckpt"
+            if candidate.is_file():
+                resume_from = candidate
+            else:
+                raise ApiError(
+                    409,
+                    "RESUME_UNAVAILABLE",
+                    f"parent run {parent_run_id} has no last.ckpt to resume from",
+                )
     resolved_config.update(config or {})
 
     run_id = new_run_id()
@@ -73,7 +92,8 @@ def create_run(
         "model_family": model_family,
         "task_type": task_type,
         "checkpoint": checkpoint,
-        "parent_run_id": None,
+        "parent_run_id": parent_run_id,
+        "resume_from": str(resume_from) if resume_from else None,
         "config": resolved_config,
         "seed": int(resolved_config.get("seed", 42)),
         "env": {},
