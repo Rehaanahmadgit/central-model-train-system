@@ -23,11 +23,11 @@ Status as of audit 2026-10-20.
 - **O10 — `events.idx`**: replay scans `events.jsonl` linearly; the optional `seq → byte-offset` index [doc 03 §2.4] lands with large-run performance work (slice 9+).
 
 ## Non-blocking notes
-- O4 — `TRAINHUB_ACCESS_TOKEN` enforcement (FR-20 P1) is now also a distribution item (DIST-07). Proposed D51: keep it optional, but warn loudly at startup and show a UI banner when the app is bound to a non-localhost address and the token is unset. **Needs approval.**
+- O4 — `TRAINHUB_ACCESS_TOKEN` enforcement (FR-20 P1 / DIST-07): **D51 approved by the user 2026-10-20** (optional token + loud startup warning + UI banner on non-localhost bind). Implementation itself lands in a later slice with `core/device.py`.
 
 ## New questions from the 2026-10-20 audit
-- **O11 — workspace root**: doc 04 §1 says default `/data/trainhub`; doc 16 DIST-04 and the master prompt say `/data`, and the Dockerfile already sets `/data`. Proposed D52: `/data` in the image, `./.dev-data` for local dev. Confirm and I will note doc 04 as superseded.
-- **O12 — registry name** for DIST-01 (`<registry>/trainhub:<ver>-cpu|gpu`): still `TODO(user)`. No image tags can be published until you provide it.
-- **O13 — GPU image base**: DIST-01/DIST-12 require a real CUDA base + torch wheel pairing. `deploy/Dockerfile`'s `gpu` target is currently identical to `cpu`; it must not be published as `-gpu` until the pairing is verified on a driver-matched server.
+- **O11 — workspace root — RESOLVED by user**: `/data` in the image, `./.dev-data` locally (doc 04 §1 superseded; recorded as D52).
+- **O12 — registry name — not blocking**: stays `TODO(user)` for DIST-01; no publish until provided.
+- **O13 — GPU image — RESOLVED by user**: the `-gpu` tag is not published until it is tested on a real GPU server (also DIST-12).
 - O5 — CSP header deferred until the SPA is served in-container (doc 10 §5); nosniff/frame/referrer/HSTS are already set.
 

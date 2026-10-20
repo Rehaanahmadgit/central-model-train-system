@@ -4,7 +4,10 @@
 # Checkpoints/datasets/runs are NEVER baked in — they live in the /data volume [doc 14 §5].
 
 ARG NODE_IMAGE=node:22-slim
-ARG PY_BASE=python:3.11-slim
+# D54: runtime standardized on Python 3.12 across laptop, CI and the image
+# (doc 13 §4 "3.11+" superseded by author decision 2026-10-20). VERIFY tag
+# against official python images at build time [doc 14 §4].
+ARG PY_BASE=python:3.12-slim
 
 # --- Frontend build ---------------------------------------------------------
 FROM ${NODE_IMAGE} AS frontend-build

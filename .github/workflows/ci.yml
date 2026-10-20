@@ -6,31 +6,19 @@ on:
   pull_request:
 
 jobs:
-  backend:
+  verify:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # D54: runtime standardized on Python 3.12 (laptop = CI = Docker).
+          python-version: "3.12"
       - run: python -m pip install --upgrade pip
-      - run: pip install -e ".[dev]"
-      - run: ruff check app tests
-      - run: mypy app
-      - run: pytest
-
-  frontend:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
-    steps:
-      - uses: actions/checkout@v4
+      - run: pip install -e "./backend[dev]"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm ci
-      - run: npm run build
+      - run: npm ci --prefix frontend
+      # The same single gate as locally: `make verify` [doc 16 FAST-01].
+      - run: make verify PYTHON=python

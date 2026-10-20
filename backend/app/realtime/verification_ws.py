@@ -38,13 +38,17 @@ async def verification_stream(websocket: WebSocket, verification_id: str) -> Non
         )
         status = verification.get("status") if verification else None
         if status in ("passed", "passed_with_warnings", "failed"):
-            # Finished: replay (snapshot) then close [doc 05 §8].
+            # Finished: replay (snapshot) then close [doc 05 §8]. Explicit close
+            # required: this Starlette version does not auto-close on return (D49).
+            await websocket.close()
             return
         while True:
             event = await queue.get()
             await websocket.send_json({**event, "run_id": verification_id})
             if event["type"] == "state":
                 break
+        # Terminal state broadcast: close so the client sees a clean disconnect.
+        await websocket.close()
     except WebSocketDisconnect:
         pass
     finally:

@@ -134,6 +134,26 @@ def test_verification_unknown_model_family_400(client: TestClient) -> None:
     assert response.json()["error"]["code"] == "UNKNOWN_MODEL_FAMILY"
 
 
+def test_verification_writes_audit_lines(client: TestClient, home: Path) -> None:
+    """verification.started/finished land in the person-free audit trail [doc 10 §6]."""
+    completed = upload_dataset(client, "yolo.zip", _good_yolo_zip())
+    verification_id = client.post(
+        "/api/v1/verifications",
+        json={"dataset_hash": completed["dataset_hash"], "model_family": "rtdetr"},
+    ).json()["id"]
+    body = _wait_for_verification(client, verification_id)
+    assert body["status"] == "passed"
+    records = [
+        record
+        for path in sorted((home / "audit").glob("audit-*.jsonl"))
+        for record in read_jsonl(path)
+    ]
+    actions = [
+        record["action"] for record in records if record.get("entity_id") == verification_id
+    ]
+    assert actions == ["verification.started", "verification.finished"]
+
+
 def test_verification_checks_endpoint(client: TestClient) -> None:
     completed = upload_dataset(client, "yolo.zip", _good_yolo_zip())
     verification_id = client.post(

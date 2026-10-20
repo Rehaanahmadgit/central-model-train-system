@@ -16,6 +16,7 @@ from app.core.config import Settings
 from app.core.errors import ApiError
 from app.realtime.broadcaster import EventBroadcaster
 from app.storage.atomic import atomic_write_json, read_json
+from app.storage.audit import append_audit
 from app.storage.dataset import dataset_exists
 from app.storage.ids import new_verification_id
 from app.storage.jsonl import read_jsonl
@@ -76,6 +77,13 @@ def create_verification(
         "schema_version": 1,
     }
     atomic_write_json(directory / "verification.json", record)
+    append_audit(
+        home,
+        action="verification.started",
+        entity_type="verification",
+        entity_id=verification_id,
+        details={"dataset_hash": dataset_hash, "model_family": model_family},
+    )
 
     future = executor.submit(
         run_verification_worker,
@@ -169,6 +177,13 @@ def _finalize(home: Path, verification_id: str, status: str) -> None:
     data["status"] = status
     data["finished_at"] = datetime.now().isoformat(timespec="seconds")
     atomic_write_json(path, data)
+    append_audit(
+        home,
+        action="verification.finished",
+        entity_type="verification",
+        entity_id=verification_id,
+        details={"status": status},
+    )
 
 
 def get_verification(home: Path, verification_id: str) -> dict[str, Any]:

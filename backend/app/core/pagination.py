@@ -1,11 +1,9 @@
 """List pagination per the documented envelope [doc 05 §0]."""
 
-from typing import Any, TypeVar
-
-T = TypeVar("T")
+from typing import Any
 
 
-def paginate(items: list[T], page: int, page_size: int) -> dict[str, Any]:
+def paginate[T](items: list[T], page: int, page_size: int) -> dict[str, Any]:
     total = len(items)
     start = (page - 1) * page_size
     return {

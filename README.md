@@ -10,11 +10,12 @@ real-time audit-grade dashboard. Specification: `doc/00`–`doc/15`.
 
 ## Layout
 
-- `backend/` — FastAPI (Python 3.11+), Pydantic v2, ruff, mypy strict, pytest
+- `backend/` — FastAPI (Python 3.12), Pydantic v2, ruff, mypy strict, pytest
 - `frontend/` — React + TypeScript strict + Vite + Tailwind v4
 - `deploy/` — Dockerfile (`cpu`/`gpu` targets), compose files [doc 14]
 - `doc/` — the specification (source of truth)
 - `PROGRESS.md`, `DECISIONS.md`, `OPEN_QUESTIONS.md` — living build-tracking files
+- `Makefile` — the single quality gate (`make verify`) [doc 16 FAST-01]
 
 ## Local development (no Docker needed)
 
@@ -51,12 +52,15 @@ Base tags and CUDA wheel pairings must be verified against official docs at buil
 
 ## Tests and quality gates
 
+One command runs everything [doc 16 FAST-01]:
+
 ```bash
-cd backend
-.venv/bin/ruff check app tests
-.venv/bin/mypy app
-.venv/bin/pytest
-cd ../frontend && npm run build
+make verify          # ruff + mypy + fast tests + frontend build
+make test-fast       # pytest only, excludes slow/gpu tests (< 60 s)
+make test-full       # everything; run at milestone end
+make test-gpu        # GPU smoke tests; GPU server only
 ```
+
+In CI the same gate runs as `make verify PYTHON=python`.
 
 `trainhub doctor` and the `@pytest.mark.gpu` smoke tests arrive with the training slices [doc 14 §3].
