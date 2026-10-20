@@ -1,0 +1,261 @@
+"""TrainHub API entry point [doc 03 §2.1].
+
+- Async FastAPI app; no heavy ML in the event loop (doc 13 §3).
+- Error envelope ``{"error": {"code", "message", "details"}}`` everywhere [doc 05 §0].
+- Optional global access token is added in a later slice [doc 10 §2, FR-20].
+"""
+
+import asyncio
+import logging
+import multiprocessing
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.api.health import router as health_router
+from app.api.router import api_router
+from app.core.config import Settings, get_settings
+from app.core.errors import ApiError
+from app.core.logging import reset_request_id, set_request_id, setup_logging
+from app.core.paths import ensure_workspace
+from app.realtime.broadcaster import EventBroadcaster
+from app.realtime.verification_ws import router as verification_ws_router
+from app.realtime.ws import router as ws_router
+from app.storage.recovery import recover_workspace
+
+REQUEST_ID_HEADER = "X-Request-Id"
+logger = logging.getLogger(__name__)
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    """Application factory; tests inject their own Settings [doc 11 §2]."""
+    resolved = settings if settings is not None else get_settings()
+    setup_logging(resolved)
+    broadcaster = EventBroadcaster()
+    recovery_warnings: list[str] = []
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        # Verification runs in a process pool, never the event loop [doc 13 §3].
+        # fork context (D46): spawn/forkserver re-import the test entry point
+        # under pytest and deadlock. The fork-in-threads deprecation warning is
+        # accepted: workers only do file I/O + PIL.
+        # Created here (not at import) so it is always shut down cleanly.
+        application.state.executor = ProcessPoolExecutor(
+            max_workers=resolved.verify_workers,
+            mp_context=multiprocessing.get_context("fork"),
+        )
+        # Best-effort layout creation; /readyz reports the truth if it fails [doc 04 §1].
+        workspace_ok = False
+        try:
+            ensure_workspace(resolved.home)
+        except OSError:
+            logger.exception("workspace unavailable at startup; /readyz will report not ready")
+        else:
+            workspace_ok = True
+            # Crash recovery on startup [doc 03 §2.2, doc 04 §3 rule 6].
+            try:
+                report = recover_workspace(resolved.home)
+            except OSError:
+                logger.exception("crash recovery failed at startup")
+            else:
+                if report.changed_anything:
+                    logger.warning(
+                        "crash recovery: interrupted=%d requeued=%d repaired_jsonl=%d "
+                        "removed_stale_tmp=%d quarantined=%d",
+                        len(report.interrupted_run_ids),
+                        len(report.requeued_run_ids),
+                        len(report.repaired_jsonl),
+                        len(report.removed_stale_tmp),
+                        len(report.quarantined),
+                    )
+                recovery_warnings[:] = [
+                    f"quarantined corrupt file: {path}" for path in report.quarantined
+                ] + [f"repaired JSONL tail: {path}" for path in report.repaired_jsonl]
+        demo_task: asyncio.Task[str | None] | None = None
+        if resolved.demo_fake_run:
+            if not workspace_ok:
+                # Fail softly: never crash startup/shutdown over a demo [doc 12 Phase 0].
+                logger.warning("workspace unavailable; skipping demo fake run")
+            else:
+                # Hello-world demo job streaming fake metrics [doc 12 Phase 0 M0].
+                from app.services.fake_run import run_fake_training
+
+                async def safe_demo() -> str | None:
+                    try:
+                        return await run_fake_training(
+                            resolved.home,
+                            broadcaster,
+                            steps=resolved.demo_fake_run_steps,
+                            interval=resolved.demo_fake_run_interval,
+                        )
+                    except Exception:
+                        logger.warning("demo fake run failed; skipping", exc_info=True)
+                        return None
+
+                demo_task = asyncio.create_task(safe_demo())
+        try:
+            yield
+        finally:
+            if demo_task is not None:
+                demo_task.cancel()
+                try:
+                    await demo_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.warning("demo fake run raised during shutdown", exc_info=True)
+            executor = getattr(application.state, "executor", None)
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+
+    application = FastAPI(
+        title="TrainHub",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url="/api/v1/docs",
+        openapi_url="/api/v1/openapi.json",
+    )
+    application.state.settings = resolved
+    application.state.broadcaster = broadcaster
+    application.state.recovery_warnings = recovery_warnings
+
+    @application.middleware("http")
+    async def attach_request_id(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        # Reuses an incoming X-Request-Id if present (not personal data) [doc 10 §8].
+        incoming = request.headers.get(REQUEST_ID_HEADER)
+        request_id = incoming if incoming else uuid.uuid4().hex
+        token = set_request_id(request_id)
+        try:
+            response = await call_next(request)
+            response.headers[REQUEST_ID_HEADER] = request_id
+            return response
+        finally:
+            reset_request_id(token)
+
+    @application.middleware("http")
+    async def security_headers(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        # Security headers [doc 10 §5]. CSP is added when the SPA is served in-container.
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+        return response
+
+    if resolved.cors_origins:
+        # CORS allowlist [doc 10 §5].
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=resolved.cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    @application.exception_handler(ApiError)
+    async def handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
+        # Documented error envelope [doc 05 §0].
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                }
+            },
+        )
+
+    @application.exception_handler(StarletteHTTPException)
+    async def handle_http_error(
+        request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": "HTTP_ERROR", "message": detail, "details": {}}},
+        )
+
+    @application.exception_handler(RequestValidationError)
+    async def handle_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # Error format [doc 05 §0]. Code VALIDATION_ERROR is an ASSUMPTION (not in docs).
+        # Keep only serializable, privacy-safe fields: no input/ctx echo.
+        errors = [
+            {"type": entry.get("type"), "loc": entry.get("loc"), "msg": entry.get("msg")}
+            for entry in exc.errors()
+        ]
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Request validation failed",
+                    "details": {"errors": errors},
+                }
+            },
+        )
+
+    @application.exception_handler(Exception)
+    async def handle_unhandled(request: Request, exc: Exception) -> JSONResponse:
+        logger.exception("unhandled error")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {"code": "INTERNAL", "message": "Internal server error", "details": {}}
+            },
+        )
+
+    application.include_router(health_router)
+    application.include_router(api_router)
+    application.include_router(ws_router)  # /ws/runs/{id} [doc 05 §8]
+    application.include_router(verification_ws_router)  # /ws/verifications/{id} [doc 05 §3]
+
+    # Serve the built SPA as a fallback for non-API GET paths [doc 14 §4].
+    # A plain Mount at "/" shadows the routers, so use a last-added catch-all
+    # route with path confinement inside the dist dir [doc 10 §5].
+    frontend_dist = resolved.frontend_dist
+    if frontend_dist is not None and frontend_dist.is_dir():
+        dist_root = frontend_dist.resolve()
+
+        @application.get("/{full_path:path}", include_in_schema=False)
+        async def spa_fallback(full_path: str) -> Response:
+            if full_path.startswith(("api/", "ws")):
+                # Unknown API/WS paths keep the documented error envelope [doc 05 §0].
+                raise StarletteHTTPException(status_code=404, detail="Not Found")
+            requested = (dist_root / full_path).resolve()
+            if requested.is_file() and requested.is_relative_to(dist_root):
+                return FileResponse(requested)
+            index = dist_root / "index.html"
+            if index.is_file():
+                # SPA client-side routing: unknown non-API paths get the shell.
+                return FileResponse(index)
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": {
+                        "code": "NOT_FOUND",
+                        "message": "Frontend bundle not found",
+                        "details": {},
+                    }
+                },
+            )
+
+    return application
+
+
+app = create_app()

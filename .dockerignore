@@ -1,0 +1,16 @@
+node_modules
+dist
+.git
+.gitignore
+doc
+*.md
+.env
+backend/.venv
+backend/__pycache__
+backend/app/**/__pycache__
+backend/.pytest_cache
+backend/.mypy_cache
+backend/.ruff_cache
+PROGRESS.md
+DECISIONS.md
+OPEN_QUESTIONS.md

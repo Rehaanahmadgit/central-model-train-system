@@ -1,0 +1,28 @@
+# Laptop dev compose: bind-mounted sources, hot reload, CPU only [doc 14 §7].
+services:
+  api:
+    build:
+      context: ..
+      target: cpu
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+    environment:
+      TRAINHUB_HOME: /data
+      TRAINHUB_DEVICE: cpu
+      TRAINHUB_LOG_LEVEL: DEBUG
+    volumes:
+      - ../backend/app:/app/app
+      - trainhub_data:/data
+    ports:
+      - "8080:8080"
+
+  frontend:
+    image: node:22-slim # VERIFY tag at build time [doc 14 §4]
+    working_dir: /app
+    command: npm run dev -- --host 0.0.0.0
+    volumes:
+      - ../frontend:/app
+    ports:
+      - "5173:5173"
+
+volumes:
+  trainhub_data:

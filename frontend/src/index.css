@@ -1,0 +1,31 @@
+@import "tailwindcss";
+@import "./theme/tokens.css";
+
+/* Map design tokens onto Tailwind utilities (Tailwind v4 @theme inline). */
+@theme inline {
+  --color-accent: var(--th-accent);
+  --color-accent-hover: var(--th-accent-hover);
+  --color-on-accent: var(--th-on-accent);
+  --color-success: var(--th-success);
+  --color-warning: var(--th-warning);
+  --color-danger: var(--th-danger);
+  --color-info: var(--th-info);
+  --color-bg: var(--th-bg);
+  --color-surface: var(--th-surface);
+  --color-border: var(--th-border);
+  --color-text: var(--th-text);
+  --color-text-secondary: var(--th-text-secondary);
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+body {
+  background-color: var(--th-bg);
+  color: var(--th-text);
+  font-family: var(--font-sans);
+}
+
+:focus-visible {
+  outline: 2px solid var(--th-focus);
+  outline-offset: 2px;
+}

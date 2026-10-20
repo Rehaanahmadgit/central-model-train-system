@@ -1,0 +1,48 @@
+/*
+ * TrainHub design tokens — CSS variables, light and dark [design brief, doc 09 §1].
+ * Palette, type and radii from the approved design brief; contrast AA on both themes.
+ */
+
+:root {
+  --th-accent: #2563eb;
+  --th-accent-hover: #1d4ed8;
+  --th-on-accent: #ffffff;
+  --th-success: #16a34a;
+  --th-warning: #d97706;
+  --th-danger: #dc2626;
+  --th-info: #0891b2;
+  --th-bg: #f8fafc;
+  --th-surface: #ffffff;
+  --th-border: #e2e8f0;
+  --th-text: #0f172a;
+  --th-text-secondary: #475569;
+  --th-focus: #2563eb;
+  --th-radius-sm: 6px;
+  --th-radius-md: 8px;
+  --th-radius-lg: 12px;
+}
+
+[data-theme="dark"] {
+  --th-accent: #60a5fa;
+  --th-accent-hover: #3b82f6;
+  --th-on-accent: #0f172a;
+  --th-success: #4ade80;
+  --th-warning: #fbbf24;
+  --th-danger: #f87171;
+  --th-info: #22d3ee;
+  --th-bg: #0f172a;
+  --th-surface: #1e293b;
+  --th-border: #334155;
+  --th-text: #f1f5f9;
+  --th-text-secondary: #94a3b8;
+  --th-focus: #60a5fa;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

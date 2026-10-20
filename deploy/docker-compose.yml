@@ -1,0 +1,20 @@
+# Production compose [doc 14 §7]. One persistent data volume = all state [doc 04].
+# The reverse proxy (nginx/Caddy) with TLS + optional token check sits in front [doc 03 §1].
+services:
+  trainhub:
+    build:
+      context: ..
+      target: cpu
+    image: trainhub:0.1.0-cpu
+    restart: unless-stopped
+    environment:
+      TRAINHUB_HOME: /data
+      TRAINHUB_DEVICE: auto
+      # TRAINHUB_ACCESS_TOKEN: set via .env file, never commit [doc 14 §7]
+    volumes:
+      - trainhub_data:/data
+    ports:
+      - "8080:8080" # behind a private network reverse proxy [doc 10 §2]
+
+volumes:
+  trainhub_data:
