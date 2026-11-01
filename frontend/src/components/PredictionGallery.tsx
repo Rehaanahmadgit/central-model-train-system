@@ -38,6 +38,9 @@ interface PredictionsFile {
 }
 
 const GALLERY_SIZE = 12;
+// Default view is deliberately stricter than the stored threshold: 0.25 shows
+// a lot of noise boxes, 0.5 is the useful "what did it actually find" view.
+const DEFAULT_CONFIDENCE = 0.5;
 const GT_COLOR = "#10b981"; // green: ground truth
 const PRED_COLOR = "#ef4444"; // red dashed: prediction
 
@@ -199,12 +202,12 @@ function PredictionCard({
   );
 }
 
-export function PredictionGallery({ runId, thresholdHint }: { runId: string; thresholdHint?: number }) {
+export function PredictionGallery({ runId }: { runId: string }) {
   const [data, setData] = useState<PredictionsFile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [split, setSplit] = useState("all");
   const [classFilter, setClassFilter] = useState("all");
-  const [confidence, setConfidence] = useState(thresholdHint ?? 0.25);
+  const [confidence, setConfidence] = useState(DEFAULT_CONFIDENCE);
 
   useEffect(() => {
     let disposed = false;
@@ -212,7 +215,9 @@ export function PredictionGallery({ runId, thresholdHint }: { runId: string; thr
       .then((body) => {
         if (disposed) return;
         setData(body);
-        if (typeof body.threshold === "number") setConfidence(body.threshold);
+        // Never show fewer boxes than the file stores: if a run kept only
+        // >= 0.6 predictions, start there instead of at 0.5.
+        setConfidence(Math.max(DEFAULT_CONFIDENCE, body.threshold ?? 0));
       })
       .catch((exc) => {
         if (!disposed) setError(exc instanceof Error ? exc.message : "No predictions yet.");

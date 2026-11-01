@@ -5,6 +5,7 @@ import { MetricChart } from "../components/MetricChart";
 import { PredictionGallery } from "../components/PredictionGallery";
 import { useRunStream } from "../hooks/useRunStream";
 import { isTerminalRunState } from "../lib/runStreamLogic";
+import { gpuLabel as formatGpu, resolveBest } from "../lib/runSummary";
 
 interface LiveRunProps {
   runId: string;
@@ -97,6 +98,7 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
   const [logQuery, setLogQuery] = useState("");
   const [logLevel, setLogLevel] = useState("all");
   const [tab, setTab] = useState<RunTab>("live");
+  const [evaluation, setEvaluation] = useState<unknown>(null);
 
   // Run info (run.json): params, checkpoint, seed, env, timestamps. Refetched
   // on every state transition so Started/Finished/Task/best stay current once
@@ -114,6 +116,22 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
       disposed = true;
     };
   }, [runId, stream.runState]);
+
+  // "Best" lives in run.json only after the worker's result event. When that
+  // never arrived (placeholder {metric: null}) the finished run showed "—"
+  // even though evaluation.json had the number: read it as a fallback [D124].
+  useEffect(() => {
+    if (!info || info.best?.metric || !isTerminalRunState(info.state)) return;
+    let disposed = false;
+    apiFetch<unknown>(`/api/v1/runs/${runId}/evaluation`)
+      .then((body) => {
+        if (!disposed) setEvaluation(body);
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, [info, runId]);
 
   // Artifact list decides which download buttons to show [doc 05 §5].
   useEffect(() => {
@@ -195,14 +213,12 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
 
   const live = ["queued", "preparing", "running", "paused", "evaluating"].includes(state);
   const terminal = isTerminalRunState(state);
+  const best = resolveBest(info?.best, evaluation);
+  const bestText = best ? `${best.metric} ${best.value}` : "—";
   const hasArtifact = (name: string): boolean => artifacts.includes(name);
-  // A "0%" reading on a finished run means no real measurement: show n/a.
-  const gpuLabel =
-    stream.system?.gpu_available === false
-      ? "No GPU detected"
-      : stream.system?.gpu_util != null && stream.system.gpu_util > 0
-        ? `${stream.system.gpu_util}%`
-        : "n/a";
+  // 0% is a real reading; only a missing sample is unknown, and a finished run
+  // says so explicitly instead of a bare "n/a" [D124].
+  const gpuLabel = formatGpu(stream.system, terminal);
 
   async function rerun(): Promise<void> {
     if (!info?.verification_id) {
@@ -321,9 +337,14 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
           <span className="text-sm">
             Best:{" "}
             <span className="font-mono">
-              {info?.best?.metric ? `${info.best.metric} ${info?.best?.value ?? ""}` : "—"}
-              {info?.best?.epoch ? ` (epoch ${info.best.epoch})` : ""}
+              {bestText}
+              {best?.epoch ? ` (epoch ${best.epoch})` : ""}
             </span>
+            {best?.source === "evaluation" && (
+              <span data-testid="best-from-evaluation" className="ml-2 text-xs text-text-secondary">
+                from evaluation report
+              </span>
+            )}
           </span>
           <span className="text-sm">
             GPU: <span className="font-mono">{gpuLabel}</span>
@@ -374,7 +395,17 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
         <StatTile label="Elapsed" value={fmtElapsed(elapsedSeconds)} />
         <StatTile label="ETA" value={etaSeconds ? fmtElapsed(etaSeconds) : "—"} hint={totalEpochs ? `epoch ${currentEpoch}/${totalEpochs}` : undefined} />
         <StatTile label="Progress" value={progressPct !== null ? `${progressPct}%` : "—"} />
-        <StatTile label="Best" value={info?.best?.metric ? `${info.best.metric} ${info?.best?.value ?? ""}` : "—"} hint={info?.best?.epoch ? `epoch ${info.best.epoch}` : undefined} />
+        <StatTile
+          label="Best"
+          value={bestText}
+          hint={
+            best?.epoch
+              ? `epoch ${best.epoch}`
+              : best?.source === "evaluation"
+                ? "from evaluation report"
+                : undefined
+          }
+        />
       </div>
 
       {progressPct !== null && (

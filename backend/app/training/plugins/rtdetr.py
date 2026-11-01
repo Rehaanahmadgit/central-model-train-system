@@ -220,6 +220,29 @@ def compute_map50(
     return {"mAP50": mean_ap, "per_class_AP": per_class, "num_classes_evaluated": len(aps)}
 
 
+def _as_int(value: Any) -> int | None:
+    """Config values may arrive as strings from an HTML form: coerce or fail."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return int(number) if number.is_integer() else None
+
+
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _clamp01(value: float) -> float:
     return min(1.0, max(0.0, value))
 
@@ -437,16 +460,30 @@ class RTDetrTrainer(TrainerPlugin):
     def validate_config(self, config: dict[str, Any], facts: dict[str, Any]) -> list[Issue]:
         del facts
         issues: list[Issue] = []
-        if int(config.get("epochs", 1)) < 1:
+        epochs = _as_int(config.get("epochs", 1))
+        if epochs is None:
+            issues.append(Issue("epochs", "must be an integer"))
+        elif epochs < 1:
             issues.append(Issue("epochs", "must be at least 1"))
-        if int(config.get("batch_size", 1)) < 1:
+        batch_size = _as_int(config.get("batch_size", 1))
+        if batch_size is None:
+            issues.append(Issue("batch_size", "must be an integer"))
+        elif batch_size < 1:
             issues.append(Issue("batch_size", "must be at least 1"))
-        if not 128 <= int(config.get("imgsz", 512)) <= 1536:
+        imgsz = _as_int(config.get("imgsz", 512))
+        if imgsz is None:
+            issues.append(Issue("imgsz", "must be an integer"))
+        elif not 128 <= imgsz <= 1536:
             issues.append(Issue("imgsz", "must be between 128 and 1536"))
-        if float(config.get("lr", 0.0001)) <= 0:
+        lr = _as_float(config.get("lr", 0.0001))
+        if lr is None:
+            issues.append(Issue("lr", "must be a number"))
+        elif lr <= 0:
             issues.append(Issue("lr", "must be positive"))
-        threshold = config.get("score_threshold", DEFAULT_SCORE_THRESHOLD)
-        if not 0.0 <= float(threshold) <= 1.0:
+        threshold = _as_float(config.get("score_threshold", DEFAULT_SCORE_THRESHOLD))
+        if threshold is None:
+            issues.append(Issue("score_threshold", "must be a number"))
+        elif not 0.0 <= threshold <= 1.0:
             issues.append(Issue("score_threshold", "must be between 0 and 1"))
         return issues
 

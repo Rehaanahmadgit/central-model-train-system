@@ -4,6 +4,13 @@ import { CheckList } from "../components/CheckList";
 import { SummaryCards } from "../components/SummaryCards";
 import { RecommendedCheckpoint } from "../components/RecommendedCheckpoint";
 import {
+  coerceConfig,
+  isNumericProperty,
+  parseFieldValue,
+  propertiesOf,
+  type HparamProperty,
+} from "../lib/hparams";
+import {
   useVerificationStream,
   type CheckItem,
   type Derived,
@@ -28,7 +35,7 @@ interface ModelInfo {
   supported_formats: string[];
   description: string;
   needs_gpu: boolean;
-  hparam_schema: { type: string; properties: Record<string, unknown> };
+  hparam_schema: { type: string; properties: Record<string, HparamProperty> };
   default_hparams: Record<string, unknown>;
 }
 
@@ -68,7 +75,9 @@ export function Wizard({ onTrained, edit = null }: WizardProps) {
         const found = body.items.find((item) => item.family === edit.modelFamily);
         if (!found) return;
         setModel(found);
-        setConfig({ ...edit.config });
+        // A previous run may hold string values (old wizard bug): coerce so the
+        // numeric inputs render as numbers and post as numbers.
+        setConfig(coerceConfig({ ...edit.config }, found.hparam_schema));
         setCheckpointCatalogId(edit.checkpointCatalogId);
         setFromScratch(edit.fromScratch);
         setVerificationId(edit.verificationId);
@@ -113,7 +122,7 @@ export function Wizard({ onTrained, edit = null }: WizardProps) {
         body: JSON.stringify({
           verification_id: verificationId,
           name: `${model?.family ?? "run"}-${dataset?.dataset.name ?? "sample"}`,
-          config,
+          config: coerceConfig(config, model?.hparam_schema),
           checkpoint_catalog_id: fromScratch ? null : checkpointCatalogId,
           from_scratch: fromScratch,
         }),
@@ -208,7 +217,7 @@ export function Wizard({ onTrained, edit = null }: WizardProps) {
           onNext={() => setStep(4)}
         />
       )}
-      {step === 4 && dataset && model && (
+      {step === 4 && model && (dataset || verificationId) && (
         <TrainStep
           dataset={dataset}
           model={model}
@@ -589,7 +598,7 @@ interface ConfigureStepProps {
 function ConfigureStep(props: ConfigureStepProps) {
   const { model, config, onChange } = props;
   const [advanced, setAdvanced] = useState(false);
-  const properties = (model.hparam_schema?.properties ?? {}) as Record<string, { type?: string; default?: unknown; minimum?: number; maximum?: number }>;
+  const properties = propertiesOf(model.hparam_schema);
 
   const basicKeys = ["epochs", "lr", "batch_size", "imgsz", "dev_preset", "amp", "freeze_backbone"];
   const visibleKeys = advanced ? Object.keys(properties) : Object.keys(properties).filter((key) => basicKeys.includes(key));
@@ -607,6 +616,7 @@ function ConfigureStep(props: ConfigureStepProps) {
         {visibleKeys.map((key) => {
           const prop = properties[key] ?? {};
           const value = config[key] ?? prop.default;
+          const numeric = isNumericProperty(prop);
           return (
             <label key={key} className="flex flex-col gap-1 text-sm">
               <span className="font-mono text-xs text-text-secondary">{key}</span>
@@ -614,15 +624,12 @@ function ConfigureStep(props: ConfigureStepProps) {
                 <input type="checkbox" checked={Boolean(value)} onChange={(event) => setValue(key, event.target.checked)} />
               ) : (
                 <input
-                  type={typeof value === "number" ? "number" : "text"}
+                  type={numeric ? "number" : "text"}
+                  inputMode={numeric ? "decimal" : undefined}
                   value={value === null || value === undefined ? "" : String(value)}
                   min={prop.minimum}
                   max={prop.maximum}
-                  onChange={(event) => {
-                    const raw = event.target.value;
-                    const parsed = typeof value === "number" && raw !== "" ? Number(raw) : raw;
-                    setValue(key, parsed);
-                  }}
+                  onChange={(event) => setValue(key, parseFieldValue(prop, event.target.value))}
                   className="rounded-md border border-border bg-bg px-3 py-2"
                 />
               )}
@@ -672,7 +679,7 @@ function ConfigureStep(props: ConfigureStepProps) {
 // --- Step 5: Train ----------------------------------------------------------
 
 interface TrainStepProps {
-  dataset: DatasetUploaded;
+  dataset: DatasetUploaded | null;
   model: ModelInfo;
   config: Record<string, unknown>;
   taskType: string | null;
@@ -688,7 +695,14 @@ function TrainStep(props: TrainStepProps) {
     <div className="flex flex-col gap-4">
       <div className="rounded-lg border border-border bg-surface p-4 text-sm">
         <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <div><dt className="text-text-secondary">Dataset</dt><dd>{props.dataset.dataset.name} ({props.dataset.dataset.file_count} files)</dd></div>
+          <div>
+            <dt className="text-text-secondary">Dataset</dt>
+            <dd>
+              {props.dataset
+                ? `${props.dataset.dataset.name} (${props.dataset.dataset.file_count} files)`
+                : "reused verification dataset"}
+            </dd>
+          </div>
           <div><dt className="text-text-secondary">Model</dt><dd className="font-mono">{props.model.family}</dd></div>
           <div><dt className="text-text-secondary">Task</dt><dd data-testid="train-task">{props.taskType ?? "—"}</dd></div>
           <div><dt className="text-text-secondary">Checkpoint</dt><dd>{props.fromScratch ? "from scratch" : props.checkpointCatalogId ?? "none"}</dd></div>

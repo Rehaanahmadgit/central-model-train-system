@@ -27,6 +27,86 @@ def dataset_root(home: Path, dataset_hash: str) -> Path:
     return home / "datasets" / dataset_hash / "raw"
 
 
+_INTEGER_TYPES = {"integer"}
+_NUMBER_TYPES = {"number"}
+
+
+def _declared_types(prop: dict[str, Any]) -> set[str]:
+    """JSON-schema ``type`` is a string or a list (``["integer", "null"]``)."""
+    declared = prop.get("type")
+    if isinstance(declared, list):
+        return {str(item) for item in declared}
+    return {str(declared)} if declared else set()
+
+
+def _schema_properties(schema: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    properties = (schema or {}).get("properties")
+    if not isinstance(properties, dict):
+        return {}
+    return {str(key): value for key, value in properties.items() if isinstance(value, dict)}
+
+
+def normalize_config(
+    config: dict[str, Any], schema: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Coerce hyperparameters to the types the plugin schema declares.
+
+    The wizard is HTML: an input hands back a string, so ``batch_size`` could
+    arrive as ``"4"`` and end up in run.json (and in the worker) as a string.
+    Numbers/booleans are converted here — the single place every run is created
+    — and anything that cannot be converted is rejected instead of being
+    silently passed on. Keys the schema does not know are left untouched.
+    """
+    properties = _schema_properties(schema)
+    normalized: dict[str, Any] = dict(config)
+    for key, prop in properties.items():
+        if key not in normalized:
+            continue
+        value = normalized[key]
+        if value is None:
+            continue  # optional fields (["integer", "null"]) stay null
+        declared = _declared_types(prop)
+        numeric = bool(declared & (_INTEGER_TYPES | _NUMBER_TYPES))
+        integer = "integer" in declared
+        if isinstance(value, bool) and numeric:
+            raise ApiError(400, "INVALID_CONFIG", f"{key} must be a number, not a boolean")
+        if integer:
+            if isinstance(value, int):
+                normalized[key] = value
+                continue
+            if isinstance(value, float) and value.is_integer():
+                normalized[key] = int(value)
+                continue
+            text = str(value).strip()
+            try:
+                normalized[key] = int(text)
+            except ValueError:
+                raise ApiError(
+                    400, "INVALID_CONFIG", f"{key} must be an integer (got {value!r})"
+                ) from None
+        elif numeric:
+            if isinstance(value, int | float):
+                normalized[key] = float(value)
+                continue
+            try:
+                normalized[key] = float(str(value).strip())
+            except ValueError:
+                raise ApiError(
+                    400, "INVALID_CONFIG", f"{key} must be a number (got {value!r})"
+                ) from None
+        elif "boolean" in declared and isinstance(value, str):
+            text = value.strip().lower()
+            if text in ("true", "1", "yes", "on"):
+                normalized[key] = True
+            elif text in ("false", "0", "no", "off"):
+                normalized[key] = False
+            else:
+                raise ApiError(
+                    400, "INVALID_CONFIG", f"{key} must be a boolean (got {value!r})"
+                )
+    return normalized
+
+
 def _run_path(home: Path, run_id: str) -> Path:
     return home / "runs" / run_id / "run.json"
 
@@ -88,6 +168,8 @@ def create_run(
                     f"parent run {parent_run_id} has no last.ckpt to resume from",
                 )
     resolved_config.update(config or {})
+    # Types are enforced at the one door every run goes through (D124).
+    resolved_config = normalize_config(resolved_config, plugin.hparam_schema)
 
     run_id = new_run_id()
     directory = home / "runs" / run_id

@@ -429,3 +429,102 @@ def test_cnn_patience_zero_disables_early_stopping(tmp_path: Path) -> None:
 
     assert make({"epochs": 1, "batch_size": 2, "imgsz": 32, "patience": 0})._patience == 0
     assert make({"epochs": 1, "batch_size": 2, "imgsz": 32})._patience == 3
+
+
+# --- config types (D124) ----------------------------------------------------
+
+def test_normalize_config_coerces_form_strings() -> None:
+    from app.services.runs import normalize_config
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "epochs": {"type": "integer", "default": 1},
+            "batch_size": {"type": "integer", "default": 1},
+            "lr": {"type": "number", "default": 0.0001},
+            "amp": {"type": "boolean", "default": False},
+        },
+    }
+
+    config = normalize_config(
+        {"epochs": "3", "batch_size": "4", "lr": "0.002", "amp": "true"}, schema
+    )
+
+    assert config == {"epochs": 3, "batch_size": 4, "lr": 0.002, "amp": True}
+    assert isinstance(config["batch_size"], int)
+    assert isinstance(config["lr"], float)
+
+
+def test_normalize_config_rejects_unusable_values() -> None:
+    from app.core.errors import ApiError
+    from app.services.runs import normalize_config
+
+    schema = {
+        "properties": {
+            "batch_size": {"type": "integer"},
+            "lr": {"type": "number"},
+            "amp": {"type": "boolean"},
+        }
+    }
+
+    for bad in (
+        {"batch_size": "four"},
+        {"batch_size": 2.5},
+        {"lr": "fast"},
+        {"amp": "maybe"},
+        {"batch_size": True},
+    ):
+        with pytest.raises(ApiError) as excinfo:
+            normalize_config(bad, schema)
+        assert excinfo.value.status_code == 400
+        assert excinfo.value.code == "INVALID_CONFIG"
+
+
+def test_normalize_config_keeps_unknown_keys() -> None:
+    from app.services.runs import normalize_config
+
+    config = normalize_config({"seed": "7", "custom": "x"}, {"properties": {}})
+
+    assert config == {"seed": "7", "custom": "x"}
+
+
+@pytest.mark.slow
+def test_run_config_is_saved_with_numeric_types(client: TestClient, home: Path) -> None:
+    """The wizard sends strings from HTML inputs; run.json must hold numbers."""
+    run_id = _start_run(
+        client,
+        entries=build_tabular(rows=40),
+        model_family="random_forest",
+        config={"n_estimators": "7"},
+    )
+    _wait_run(client, run_id)
+
+    record = read_json(home / "runs" / run_id / "run.json")
+    assert record["config"]["n_estimators"] == 7
+    assert isinstance(record["config"]["n_estimators"], int)
+
+
+@pytest.mark.slow
+def test_run_rejects_non_numeric_config(client: TestClient) -> None:
+    completed = upload_dataset(client, "tabular.zip", to_zip(build_tabular(rows=20)))
+    verification = client.post(
+        "/api/v1/verifications",
+        json={
+            "dataset_hash": completed["dataset_hash"],
+            "model_family": "random_forest",
+            "preset": "dev",
+        },
+    ).json()
+    _wait_verification(client, verification["id"])
+
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "verification_id": verification["id"],
+            "name": "bad-config",
+            "config": {"n_estimators": "many"},
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "INVALID_CONFIG"

@@ -132,3 +132,11 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - Risk checks: class ids stay in the sorted class-name space; normalized vs pixel boxes; horizontal flip only in train mode; overlay scaled by the real image size. Browser check caught a real NaN bug (GT rows vs prediction rows) — fixed and unit-tested.
 - Tests: `match_counts` known answer (hand-computed counts), IoU 0.5 boundary, payload shape, image-endpoint traversal/unlisted/missing/token cases, `e2e/predictions-logic.spec.ts`, and a slow CPU `dev_preset` run asserting `predictions.json` (val + test).
 - `make verify` green. Not run: GPU/full-mode training, real container e2e.
+
+## Run-again fixes (2026-11-01)
+- Header "Best": falls back to `evaluation.json` val mAP50 when `run.json.best` is still the placeholder, and says so ("from evaluation report") (D124).
+- GPU %: 0% is a real reading, a finished run without samples says "n/a (run finished)" (D125).
+- Predictions gallery defaults to confidence 0.5 while still showing the stored threshold (D126).
+- Config types: schema-driven numeric inputs, `coerceConfig` before POST, and `normalize_config` in `create_run` (rejects with `INVALID_CONFIG` 400); RT-DETR `validate_config` no longer crashes on non-numeric values (D127).
+- "Edit & run" Train step was empty (no dataset object) — fixed, the run can be started from that path (D128).
+- Tests: `backend/tests/test_training.py` (normalize_config coercion/rejection, run.json types via API, 400 on bad config), `frontend/e2e/run-summary-logic.spec.ts` (best fallback, GPU labels, config coercion/parsing). Repro + fix verified in the browser.
