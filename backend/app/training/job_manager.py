@@ -16,7 +16,7 @@ import socket
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -206,11 +206,11 @@ class JobManager:
         elif to == "stopped":
             record["failure"] = {"reason": None, "details": None}
         if to in ("completed", "failed", "stopped"):
-            record["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            record["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
         if to in ("running", "paused"):
-            record["started_at"] = record.get("started_at") or datetime.now().isoformat(
-                timespec="seconds"
-            )
+            record["started_at"] = record.get("started_at") or datetime.now(
+                UTC
+            ).isoformat(timespec="seconds")
         path = self._home / "runs" / run_id / "run.json"
         with FileLock(self._home / "locks" / f"run-{run_id}.lock"):
             atomic_write_json(path, record)

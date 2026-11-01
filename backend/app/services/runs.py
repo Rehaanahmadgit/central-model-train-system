@@ -8,7 +8,7 @@ Manager. No heavy work happens in the event loop [doc 13 §3].
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -87,7 +87,7 @@ def create_run(
     run_id = new_run_id()
     directory = home / "runs" / run_id
     directory.mkdir(parents=True, exist_ok=False)
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     checkpoint: dict[str, Any] = {"catalog_id": None, "sha256": None, "source": "none"}
     if not from_scratch and checkpoint_catalog_id:
         checkpoint = {"catalog_id": checkpoint_catalog_id, "sha256": None, "source": "download"}

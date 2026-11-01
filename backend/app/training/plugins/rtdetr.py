@@ -383,10 +383,11 @@ class RTDetrTrainer(TrainerPlugin):
                     raise ValueError(f"nan/inf loss at epoch {epoch}")
                 running_loss += loss
                 seen += 1
-                step = (epoch - 1) * len(self._train_samples) + seen
-                ctx.emit_metric("train/loss", float(running_loss / seen), step, epoch, "train")
             if ctx.should_stop():
                 break
+            # Epoch-mean train loss, one point per epoch (step == epoch) [doc 08 §6].
+            train_loss = running_loss / max(seen, 1)
+            ctx.emit_metric("train/loss", float(train_loss), epoch, epoch, "train")
             val_map = self._evaluate_map()
             if math.isnan(val_map):
                 raise ValueError(f"nan validation mAP at epoch {epoch}")
@@ -394,7 +395,7 @@ class RTDetrTrainer(TrainerPlugin):
             improved = val_map > self._best_map
             ctx.emit_log(
                 "INFO",
-                f"epoch {epoch}/{self._epochs} train/loss={running_loss / max(seen, 1):.4f} "
+                f"epoch {epoch}/{self._epochs} train/loss={train_loss:.4f} "
                 f"val/mAP50={val_map:.4f}",
             )
             self._save(ctx, epoch, is_best=improved)
@@ -421,6 +422,7 @@ class RTDetrTrainer(TrainerPlugin):
             for cid, ap in result["per_class_AP"].items()
             if cid < len(names)
         }
+        result["samples"] = len(self._val_samples)
         return result
 
     def resume(self, ctx: RunContext, checkpoint_path: Path) -> None:
@@ -588,4 +590,7 @@ class RTDetrTrainer(TrainerPlugin):
         if is_best:
             best = checkpoints / "best.ckpt"
             torch.save(payload, best)
+            # Ultralytics-compatible copy of the best weights (no optimizer state)
+            # so the export can be loaded by the upstream tooling [doc 08 §6].
+            torch.save({"ema": {"module": self._model.state_dict()}}, checkpoints / "weights.pth")
             ctx.save_checkpoint(best, is_best=True, metrics={"epoch": epoch})

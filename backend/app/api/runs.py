@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
 from fastapi import APIRouter, Request
+from fastapi.responses import FileResponse
 
 from app.core.config import Settings
 from app.core.errors import ApiError
@@ -19,6 +21,8 @@ from app.training.job_manager import JobManager, JobNotFoundError
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 RUN_ID_PATTERN = re.compile(r"^run_[0-9]{8}_[0-9]{6}_[0-9a-f]{4}$")
+# Only these run sub-directories are downloadable [doc 05 §5].
+ARTIFACT_ROOTS: tuple[str, ...] = ("checkpoints", "artifacts")
 
 
 def _check_run_id(run_id: str) -> str:
@@ -129,6 +133,70 @@ def get_evaluation(run_id: str, request: Request) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ApiError(500, "EVALUATION_CORRUPT", "evaluation report is unreadable")
     return data
+
+
+def _list_artifacts(run_dir: Path) -> list[dict[str, Any]]:
+    """Files under runs/{id}/checkpoints and runs/{id}/artifacts [doc 05 §5]."""
+    items: list[dict[str, Any]] = []
+    for root_name in ARTIFACT_ROOTS:
+        root = run_dir / root_name
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            items.append(
+                {
+                    "name": path.relative_to(run_dir).as_posix(),
+                    "dir": root_name,
+                    "size_bytes": stat.st_size,
+                    "modified_at": datetime.fromtimestamp(
+                        stat.st_mtime, UTC
+                    ).isoformat(timespec="seconds"),
+                }
+            )
+    return items
+
+
+def _resolve_artifact(run_dir: Path, name: str) -> Path | None:
+    """Resolve ``name`` inside runs/{id}/checkpoints|artifacts; never escape the run [doc 10 §5].
+
+    Accepts both ``checkpoints/best.ckpt`` (run-relative) and ``best.ckpt``
+    (looked up in each allowed directory).
+    """
+    root = run_dir.resolve()
+    allowed = tuple(root / base for base in ARTIFACT_ROOTS)
+    for candidate in (root / name, *(base / name for base in allowed)):
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(root):
+            raise ApiError(400, "INVALID_ARTIFACT", "artifact path escapes the run directory")
+        if any(resolved.is_relative_to(base) for base in allowed) and resolved.is_file():
+            return resolved
+    return None
+
+
+@router.get("/{run_id}/artifacts")
+def list_artifacts(run_id: str, request: Request) -> dict[str, Any]:
+    """Downloadable checkpoints/artifacts for a run."""
+    checked = _check_run_id(run_id)
+    run_dir = _home(request) / "runs" / checked
+    if not (run_dir / "run.json").is_file():
+        raise ApiError(404, "RUN_NOT_FOUND", f"run {run_id} does not exist")
+    return {"run_id": checked, "artifacts": _list_artifacts(run_dir)}
+
+
+@router.get("/{run_id}/artifacts/{name:path}")
+def download_artifact(run_id: str, name: str, request: Request) -> FileResponse:
+    """Stream one artifact file; the path is confined to the allowed directories."""
+    checked = _check_run_id(run_id)
+    run_dir = _home(request) / "runs" / checked
+    if not (run_dir / "run.json").is_file():
+        raise ApiError(404, "RUN_NOT_FOUND", f"run {run_id} does not exist")
+    path = _resolve_artifact(run_dir, name)
+    if path is None:
+        raise ApiError(404, "ARTIFACT_NOT_FOUND", f"artifact {name!r} does not exist")
+    return FileResponse(path, filename=path.name)
 
 
 @router.get("/{run_id}/events")

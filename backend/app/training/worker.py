@@ -66,6 +66,16 @@ def _heartbeat() -> None:
         time.sleep(_heartbeat_seconds)
 
 
+def gpu_available() -> bool:
+    """True when this process can use CUDA [doc 14 §3.5]; never raises."""
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except Exception:  # pragma: no cover - torch absent or CUDA init failed
+        return False
+
+
 def sample_gpu() -> tuple[float | None, float | None]:
     """Return (gpu_util_percent, gpu_mem_mb) or (None, None).
 
@@ -150,6 +160,7 @@ def _sample_system() -> None:
             emit(
                 "system",
                 {
+                    "gpu_available": gpu_available(),
                     "gpu_util": gpu_util,
                     "gpu_mem_mb": gpu_mem_mb,
                     "cpu": cpu,
@@ -216,7 +227,16 @@ class WorkerRunContext:
         emit("event", {"name": event_type, **payload})
 
     def emit_system(self, cpu: float | None, ram_mb: float | None) -> None:
-        emit("system", {"gpu_util": None, "gpu_mem_mb": None, "cpu": cpu, "ram_mb": ram_mb})
+        emit(
+            "system",
+            {
+                "gpu_available": gpu_available(),
+                "gpu_util": None,
+                "gpu_mem_mb": None,
+                "cpu": cpu,
+                "ram_mb": ram_mb,
+            },
+        )
 
     def save_checkpoint(self, path: Path, is_best: bool, metrics: dict[str, Any]) -> None:
         emit(
