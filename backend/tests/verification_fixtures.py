@@ -1,6 +1,7 @@
 """Synthetic verification datasets [doc 11 §2: generated, not committed binaries]."""
 
 import io
+import json
 from pathlib import Path
 
 from PIL import Image
@@ -47,4 +48,52 @@ def make_folder_dataset(root: Path, *, classes: tuple[str, ...] = ("cat", "dog")
         directory.mkdir(parents=True)
         for index in range(3):
             (directory / f"{name}{index}.png").write_bytes(_png_bytes((0, 255, 0)))
+    return raw
+
+
+def make_coco_multi_split_dataset(
+    root: Path,
+    *,
+    train: int = 69,
+    valid: int = 19,
+    test: int = 10,
+) -> Path:
+    """Roboflow-style COCO export: one ``_annotations.coco.json`` per split.
+
+    ``categories`` has a dummy parent (id 0 "fruit", supercategory "none") that
+    no annotation uses, plus apple (1) and orange (2). Every image is 64x64 with
+    a single [16, 8, 32, 16] pixel bbox, so the normalized box is deterministic.
+    """
+    raw = root / "raw"
+    categories = [
+        {"id": 0, "name": "fruit", "supercategory": "none"},
+        {"id": 1, "name": "apple", "supercategory": "fruit"},
+        {"id": 2, "name": "orange", "supercategory": "fruit"},
+    ]
+    for folder, count in (("train", train), ("valid", valid), ("test", test)):
+        directory = raw / folder
+        directory.mkdir(parents=True, exist_ok=True)
+        images: list[dict[str, object]] = []
+        annotations: list[dict[str, object]] = []
+        for index in range(count):
+            file_name = f"{index}.png"
+            (directory / file_name).write_bytes(_png_bytes((255, 0, 0)))
+            category_id = 1 if index % 2 == 0 else 2
+            images.append(
+                {"id": index, "file_name": file_name, "width": 64, "height": 64}
+            )
+            annotations.append(
+                {
+                    "id": index + 1,
+                    "image_id": index,
+                    "category_id": category_id,
+                    "bbox": [16, 8, 32, 16],
+                }
+            )
+        (directory / "_annotations.coco.json").write_text(
+            json.dumps(
+                {"images": images, "annotations": annotations, "categories": categories}
+            ),
+            encoding="utf-8",
+        )
     return raw

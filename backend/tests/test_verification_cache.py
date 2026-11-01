@@ -18,6 +18,7 @@ from fixtures.make_datasets import (
     to_zip,
 )
 from helpers import upload_dataset
+from verification_fixtures import make_coco_multi_split_dataset
 
 from app.checkpoints.catalog import CatalogEntry, load_catalog
 from app.core.device import DeviceInfo, resolve_device
@@ -106,6 +107,26 @@ def test_manifest_detects_splits_and_boxes(tmp_path: Path) -> None:
     first_with_boxes = next(row for row in summary.rows if row["num_boxes"])
     # Per-box [class_id, cx, cy, w, h] (normalized) [doc 06 §4; S14b].
     assert json.loads(first_with_boxes["boxes"])[0] == [0, 0.25, 0.25, 0.5, 0.5]
+
+
+def test_manifest_coco_multi_split_with_dummy_category(tmp_path: Path) -> None:
+    """Roboflow COCO export: one json per split + a parent dummy category."""
+    raw = make_coco_multi_split_dataset(tmp_path)
+    summary = build_manifest(raw, "coco", sample_cap=500)
+    assert len(summary.rows) == 98
+    assert summary.class_names == ["apple", "orange"]
+    assert summary.class_to_id == {"apple": 0, "orange": 1}
+    assert summary.num_samples == {"train": 69, "val": 19, "test": 10}
+
+    by_path = {row["path"]: row for row in summary.rows}
+    # Boxes: [class_id, cx, cy, w, h] normalized from pixel [x, y, w, h]
+    # (top-left) divided by image width/height [doc 06 §4].
+    assert json.loads(by_path["train/0.png"]["boxes"]) == [[0, 0.5, 0.25, 0.5, 0.25]]
+    assert json.loads(by_path["train/1.png"]["boxes"]) == [[1, 0.5, 0.25, 0.5, 0.25]]
+    # Split comes from the folder, and the path keeps the folder prefix.
+    assert by_path["train/0.png"]["split"] == "train"
+    assert by_path["valid/0.png"]["split"] == "val"
+    assert by_path["test/0.png"]["split"] == "test"
 
 
 def test_manifest_tabular_schema(tmp_path: Path) -> None:

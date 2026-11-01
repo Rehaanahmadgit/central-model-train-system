@@ -60,6 +60,13 @@ strict = true
 files = ["app"]
 exclude = ["app/vendor"]
 
+[[tool.mypy.overrides]]
+# Vendored upstream RT-DETR (Apache-2.0) is third-party code: keep it out of
+# our type gates [S14a, D120]. `exclude` does not apply to files listed via
+# `files`, so ignore the vendored package explicitly.
+module = "app.vendor.*"
+ignore_errors = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

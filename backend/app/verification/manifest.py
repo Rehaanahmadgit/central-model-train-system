@@ -189,10 +189,23 @@ def _coco_rows(root: Path, annotation_file: Path) -> list[dict[str, Any]]:
         return []
     if not isinstance(data, dict):
         return []
+    raw_categories = [
+        entry for entry in data.get("categories", []) if isinstance(entry, dict)
+    ]
+    annotation_category_ids = {
+        annotation.get("category_id")
+        for annotation in data.get("annotations", [])
+        if isinstance(annotation, dict)
+    }
+    # Roboflow exports a parent category with supercategory "none" that never
+    # appears on a box; such dummy categories are not real classes.
     categories = {
         entry.get("id"): str(entry.get("name", entry.get("id")))
-        for entry in data.get("categories", [])
-        if isinstance(entry, dict)
+        for entry in raw_categories
+        if not (
+            entry.get("supercategory") == "none"
+            and entry.get("id") not in annotation_category_ids
+        )
     }
     # Stable class ids: sorted category names (same order as _summarize's
     # class_to_id), not the arbitrary COCO category ids.
@@ -203,12 +216,16 @@ def _coco_rows(root: Path, annotation_file: Path) -> list[dict[str, Any]]:
     for annotation in data.get("annotations", []):
         if isinstance(annotation, dict):
             by_image.setdefault(annotation.get("image_id"), []).append(annotation)
+    # Multi-split COCO keeps one JSON per split folder; file_name is relative
+    # to that folder [Roboflow]. Resolve against the JSON's parent so the
+    # manifest path includes the split (train/xxx.jpg) and split_of() works.
+    split_folder = annotation_file.parent
     rows: list[dict[str, Any]] = []
     for image in data.get("images", []):
         if not isinstance(image, dict):
             continue
         file_name = str(image.get("file_name", ""))
-        candidate = root / file_name
+        candidate = split_folder / file_name
         relative = candidate.relative_to(root).as_posix() if candidate.is_file() else file_name
         width = image.get("width")
         height = image.get("height")
@@ -387,8 +404,24 @@ def build_manifest(
     if detected_format == "yolo":
         summary.rows = _yolo_rows(root, images)
     elif detected_format == "coco":
-        annotation_file = next((path for path in files if path.suffix.lower() == ".json"), None)
-        summary.rows = _coco_rows(root, annotation_file) if annotation_file else []
+        # Multi-split COCO: one _annotations.coco.json per train/valid/test
+        # folder; read every one and concatenate rows [Roboflow export].
+        coco_rows: list[dict[str, Any]] = []
+        for path in files:
+            if path.suffix.lower() != ".json":
+                continue
+            try:
+                probe = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not (
+                isinstance(probe, dict)
+                and "images" in probe
+                and "annotations" in probe
+            ):
+                continue
+            coco_rows.extend(_coco_rows(root, path))
+        summary.rows = coco_rows
     elif detected_format in ("image_folder", "csv_path_label"):
         summary.rows = _folder_rows(root, images)
         if detected_format == "csv_path_label":

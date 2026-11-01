@@ -3,7 +3,11 @@
 from pathlib import Path
 
 from fixtures.make_datasets import build_classification, build_yolo, materialize
-from verification_fixtures import make_folder_dataset, make_yolo_dataset
+from verification_fixtures import (
+    make_coco_multi_split_dataset,
+    make_folder_dataset,
+    make_yolo_dataset,
+)
 
 from app.verification.checks.archive_integrity import ArchiveIntegrityCheck
 from app.verification.checks.class_distribution import ClassDistributionCheck
@@ -108,6 +112,18 @@ def test_label_validity_passes_good_yolo(tmp_path: Path) -> None:
     result = LabelValidityCheck().run(ctx)
     assert result.status == "pass"
     assert ctx.facts["class_counts"] == {0: 3, 1: 1}
+
+
+def test_label_validity_coco_multi_split_drops_dummy_category(tmp_path: Path) -> None:
+    raw = make_coco_multi_split_dataset(tmp_path, train=2, valid=1, test=1)
+    ctx = _ctx(raw)
+    FormatSupportedCheck().run(ctx)
+    result = LabelValidityCheck().run(ctx)
+    assert result.status == "pass"
+    # The dummy parent category ("fruit") is never a class.
+    assert ctx.facts["class_names"] == ["apple", "orange"]
+    # All three split JSONs were checked: 2 train + 1 val + 1 test annotation.
+    assert sum(ctx.facts["class_counts"].values()) == 4
 
 
 def test_class_distribution_warns_on_imbalance(tmp_path: Path) -> None:

@@ -287,8 +287,12 @@ class LabelValidityCheck(Check):
         )
 
     def _check_coco(self, ctx: VerificationContext) -> CheckResult:
-        coco_path = next(ctx.dataset_root.rglob("*.json"), None)
-        if coco_path is None:
+        coco_files = [
+            path
+            for path in ctx.dataset_root.rglob("*.json")
+            if path.is_file() and self._is_coco_json(path)
+        ]
+        if not coco_files:
             return CheckResult(
                 name=self.name,
                 severity=self.severity,
@@ -296,56 +300,84 @@ class LabelValidityCheck(Check):
                 message="COCO annotations json not found",
                 fix_hint="Provide a COCO-style annotations file.",
             )
-        try:
-            data = json.loads(coco_path.read_text(encoding="utf-8"))
-        except ValueError:
-            return CheckResult(
-                name=self.name,
-                severity=self.severity,
-                status="fail",
-                message="COCO json is not valid JSON",
-                fix_hint="Fix the annotations file.",
-            )
-        images = {entry["id"]: entry for entry in data.get("images", [])}
-        categories = {entry["id"]: entry for entry in data.get("categories", [])}
         problems: list[str] = []
-        class_counts: dict[int, int] = {}
+        class_counts: dict[str, int] = {}
         checked = 0
-        for annotation in data.get("annotations", []):
-            checked += 1
-            image = images.get(annotation.get("image_id"))
-            box = annotation.get("bbox")
-            category_id = annotation.get("category_id")
-            if category_id not in categories:
-                problems.append(
-                    f"annotation {annotation.get('id')}: unknown category {category_id}"
+        for coco_path in coco_files:
+            try:
+                data = json.loads(coco_path.read_text(encoding="utf-8"))
+            except ValueError:
+                return CheckResult(
+                    name=self.name,
+                    severity=self.severity,
+                    status="fail",
+                    message=f"{coco_path.name} is not valid JSON",
+                    fix_hint="Fix the annotations file.",
                 )
+            if not isinstance(data, dict):
                 continue
-            class_counts[category_id] = class_counts.get(category_id, 0) + 1
-            if image is None:
-                problems.append(f"annotation {annotation.get('id')}: unknown image id")
-                continue
-            if not isinstance(box, list) or len(box) != 4:
-                problems.append(f"annotation {annotation.get('id')}: malformed bbox")
-                continue
-            x, y, width, height = (float(value) for value in box)
-            if width <= 0 or height <= 0:
-                problems.append(f"annotation {annotation.get('id')}: zero-area bbox")
-            else:
-                right = x + width
-                bottom = y + height
-                if right > float(image.get("width", 0)) or bottom > float(image.get("height", 0)):
+            images = {
+                entry["id"]: entry
+                for entry in data.get("images", [])
+                if isinstance(entry, dict) and "id" in entry
+            }
+            raw_categories = [
+                entry for entry in data.get("categories", []) if isinstance(entry, dict)
+            ]
+            annotation_category_ids = {
+                annotation.get("category_id")
+                for annotation in data.get("annotations", [])
+                if isinstance(annotation, dict)
+            }
+            # Drop Roboflow parent categories (supercategory "none", no boxes).
+            categories = {
+                entry["id"]: entry
+                for entry in raw_categories
+                if "id" in entry
+                and not (
+                    entry.get("supercategory") == "none"
+                    and entry.get("id") not in annotation_category_ids
+                )
+            }
+            for annotation in data.get("annotations", []):
+                if not isinstance(annotation, dict):
+                    continue
+                checked += 1
+                image = images.get(annotation.get("image_id"))
+                box = annotation.get("bbox")
+                category_id = annotation.get("category_id")
+                if category_id not in categories:
                     problems.append(
-                        f"annotation {annotation.get('id')}: bbox outside image bounds"
+                        f"annotation {annotation.get('id')}: unknown category {category_id}"
                     )
+                    continue
+                name = str(categories[category_id].get("name", category_id))
+                class_counts[name] = class_counts.get(name, 0) + 1
+                if image is None:
+                    problems.append(f"annotation {annotation.get('id')}: unknown image id")
+                    continue
+                if not isinstance(box, list) or len(box) != 4:
+                    problems.append(f"annotation {annotation.get('id')}: malformed bbox")
+                    continue
+                x, y, width, height = (float(value) for value in box)
+                if width <= 0 or height <= 0:
+                    problems.append(f"annotation {annotation.get('id')}: zero-area bbox")
+                else:
+                    right = x + width
+                    bottom = y + height
+                    out_of_bounds = right > float(image.get("width", 0)) or bottom > float(
+                        image.get("height", 0)
+                    )
+                    if out_of_bounds:
+                        problems.append(
+                            f"annotation {annotation.get('id')}: bbox outside image bounds"
+                        )
         ctx.facts["class_counts"] = class_counts
-        ctx.facts["class_names"] = [
-            str(categories[cid].get("name", cid)) for cid in sorted(class_counts)
-        ]
+        ctx.facts["class_names"] = sorted(class_counts)
         details = {
             "checked": checked,
             "invalid": len(problems),
-            "classes": len(categories),
+            "classes": len(class_counts),
         }
         if problems:
             return CheckResult(
@@ -361,6 +393,14 @@ class LabelValidityCheck(Check):
             name=self.name,
             severity=self.severity,
             status="pass",
-            message=f"{checked} annotations are valid across {len(categories)} categories",
+            message=f"{checked} annotations are valid across {len(class_counts)} classes",
             details=details,
         )
+
+    @staticmethod
+    def _is_coco_json(path: Path) -> bool:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        return isinstance(data, dict) and "images" in data and "annotations" in data

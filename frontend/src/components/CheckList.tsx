@@ -30,7 +30,16 @@ export function CheckList({ checks }: CheckListProps) {
                   {meta.icon}
                 </span>
                 <span className="font-mono font-medium">{check.name}</span>
-                <span className={`ml-auto text-xs font-semibold ${meta.classes}`}>
+                {/* Fail/warn message on one line, no click needed [doc 06 §8]. */}
+                {(check.status === "fail" || check.status === "warn") && check.message && (
+                  <span
+                    className="min-w-0 flex-1 truncate text-xs text-text-secondary"
+                    title={check.message}
+                  >
+                    {check.message}
+                  </span>
+                )}
+                <span className={`ml-auto shrink-0 text-xs font-semibold ${meta.classes}`}>
                   {meta.label}
                 </span>
               </summary>
