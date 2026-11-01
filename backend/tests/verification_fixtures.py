@@ -97,3 +97,34 @@ def make_coco_multi_split_dataset(
             encoding="utf-8",
         )
     return raw
+
+
+def make_coco_single(
+    root: Path,
+    *,
+    bbox: list[float],
+    size: tuple[int, int] = (225, 225),
+    category_id: int = 1,
+) -> Path:
+    """One-image COCO dataset with a caller-chosen bbox (for bounds tests)."""
+    raw = root / "raw"
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / "0.png").write_bytes(_png_bytes((255, 0, 0)))
+    width, height = size
+    (raw / "annotations.json").write_text(
+        json.dumps(
+            {
+                "images": [
+                    {"id": 0, "file_name": "0.png", "width": width, "height": height}
+                ],
+                "annotations": [
+                    {"id": 1, "image_id": 0, "category_id": category_id, "bbox": bbox}
+                ],
+                "categories": [
+                    {"id": category_id, "name": "apple", "supercategory": "fruit"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return raw

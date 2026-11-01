@@ -1,10 +1,12 @@
 """Verification check unit tests [doc 06 §4, doc 11 §3]."""
 
+import json
 from pathlib import Path
 
 from fixtures.make_datasets import build_classification, build_yolo, materialize
 from verification_fixtures import (
     make_coco_multi_split_dataset,
+    make_coco_single,
     make_folder_dataset,
     make_yolo_dataset,
 )
@@ -14,6 +16,7 @@ from app.verification.checks.class_distribution import ClassDistributionCheck
 from app.verification.checks.content import CorruptFilesCheck, LabelValidityCheck
 from app.verification.checks.format_supported import FormatSupportedCheck
 from app.verification.context import VerificationContext
+from app.verification.manifest import build_manifest
 from app.verification.runner import run_pipeline
 
 
@@ -124,6 +127,35 @@ def test_label_validity_coco_multi_split_drops_dummy_category(tmp_path: Path) ->
     assert ctx.facts["class_names"] == ["apple", "orange"]
     # All three split JSONs were checked: 2 train + 1 val + 1 test annotation.
     assert sum(ctx.facts["class_counts"].values()) == 4
+
+
+def test_label_validity_coco_bbox_within_1px_tolerance(tmp_path: Path) -> None:
+    # 225x225 image; bbox bottom = y + h = 225.01 (0.01 px over) -> tolerated.
+    raw = make_coco_single(tmp_path, bbox=[0, 100, 100, 125.01], size=(225, 225))
+    ctx = _ctx(raw)
+    FormatSupportedCheck().run(ctx)
+    result = LabelValidityCheck().run(ctx)
+    assert result.status == "pass"
+
+
+def test_label_validity_coco_bbox_beyond_1px_fails_with_details(tmp_path: Path) -> None:
+    # bbox bottom = y + h = 230 (5 px over the 225 px image) -> real failure,
+    # and the message names the image and how far it is out.
+    raw = make_coco_single(tmp_path, bbox=[0, 100, 100, 130], size=(225, 225))
+    ctx = _ctx(raw)
+    FormatSupportedCheck().run(ctx)
+    result = LabelValidityCheck().run(ctx)
+    assert result.status == "fail"
+    assert any("0.png" in sample and "5.00px" in sample for sample in result.samples)
+
+
+def test_manifest_coco_clips_boxes_to_unit_range(tmp_path: Path) -> None:
+    # 100x100 image with a 110x110 bbox: normalized w/h would be 1.1 -> clip 1.0.
+    raw = make_coco_single(tmp_path, bbox=[0, 0, 110, 110], size=(100, 100))
+    summary = build_manifest(raw, "coco", sample_cap=100)
+    row = next(row for row in summary.rows if row["boxes"])
+    box = json.loads(row["boxes"])[0]
+    assert box == [0, 0.55, 0.55, 1.0, 1.0]
 
 
 def test_class_distribution_warns_on_imbalance(tmp_path: Path) -> None:

@@ -246,16 +246,14 @@ def _coco_rows(root: Path, annotation_file: Path) -> list[dict[str, Any]]:
             if width <= 0 or height <= 0:
                 continue
             x, y, w, h = (float(value) for value in bbox)
-            # COCO [x, y, w, h] (top-left, pixels) -> YOLO [cx, cy, w, h] normalized.
-            boxes.append(
-                [
-                    name_to_index[name],
-                    (x + w / 2) / width,
-                    (y + h / 2) / height,
-                    w / width,
-                    h / height,
-                ]
-            )
+            # COCO [x, y, w, h] (top-left, pixels) -> YOLO [cx, cy, w, h]
+            # normalized, clipped to [0, 1] so a fractional-pixel overflow at
+            # the image edge never leaks out-of-range values into training.
+            cx = min(1.0, max(0.0, (x + w / 2) / width))
+            cy = min(1.0, max(0.0, (y + h / 2) / height))
+            nw = min(1.0, max(0.0, w / width))
+            nh = min(1.0, max(0.0, h / height))
+            boxes.append([name_to_index[name], cx, cy, nw, nh])
             if class_id is None:
                 class_id = name_to_index[name]
                 label = name

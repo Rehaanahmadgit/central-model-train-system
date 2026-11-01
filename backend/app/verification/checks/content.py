@@ -362,16 +362,26 @@ class LabelValidityCheck(Check):
                 x, y, width, height = (float(value) for value in box)
                 if width <= 0 or height <= 0:
                     problems.append(f"annotation {annotation.get('id')}: zero-area bbox")
-                else:
-                    right = x + width
-                    bottom = y + height
-                    out_of_bounds = right > float(image.get("width", 0)) or bottom > float(
-                        image.get("height", 0)
+                    continue
+                img_width = float(image.get("width", 0))
+                img_height = float(image.get("height", 0))
+                # Roboflow exports can overflow the image edge by a fraction of
+                # a pixel (rounding). Tolerate up to 1.0 px; beyond that it is a
+                # real out-of-bounds box and we say which image and how far.
+                overshoot = max(
+                    0.0,
+                    -x,
+                    -y,
+                    x + width - img_width,
+                    y + height - img_height,
+                )
+                if overshoot > 1.0:
+                    file_name = str(
+                        image.get("file_name", image.get("id", annotation.get("image_id")))
                     )
-                    if out_of_bounds:
-                        problems.append(
-                            f"annotation {annotation.get('id')}: bbox outside image bounds"
-                        )
+                    problems.append(
+                        f"{file_name}: bbox outside image bounds by {overshoot:.2f}px"
+                    )
         ctx.facts["class_counts"] = class_counts
         ctx.facts["class_names"] = sorted(class_counts)
         details = {
