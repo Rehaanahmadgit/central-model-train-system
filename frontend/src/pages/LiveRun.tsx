@@ -9,6 +9,13 @@ interface LiveRunProps {
   theme: "light" | "dark";
   onBack: () => void;
   onNavigate: (runId: string) => void;
+  onEditRun: (edit: {
+    verificationId: string;
+    config: Record<string, unknown>;
+    modelFamily: string;
+    checkpointCatalogId: string | null;
+    fromScratch: boolean;
+  }) => void;
 }
 
 interface RunInfo {
@@ -17,6 +24,7 @@ interface RunInfo {
   state: string;
   model_family: string;
   task_type: string | null;
+  verification_id: string | null;
   dataset_hash: string;
   checkpoint: { catalog_id?: string | null; sha256?: string | null; source?: string | null };
   config: Record<string, unknown>;
@@ -71,11 +79,12 @@ function StatTile({ label, value, hint }: { label: string; value: string; hint?:
 
 // Live Run page: audit-grade tracker [doc 09 §3]. State is restored on reload
 // by the snapshot + last_seq resume in useRunStream [doc 05 §8].
-export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
+export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRunProps) {
   const stream = useRunStream(runId);
   const [info, setInfo] = useState<RunInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [artifacts, setArtifacts] = useState<string[]>([]);
   const [now, setNow] = useState(Date.now());
   const [logQuery, setLogQuery] = useState("");
   const [logLevel, setLogLevel] = useState("all");
@@ -92,6 +101,21 @@ export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
       })
       .catch(() => {
         if (!disposed) setLoadError("Could not load run info.");
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [runId, stream.runState]);
+
+  // Artifact list decides which download buttons to show [doc 05 §5].
+  useEffect(() => {
+    let disposed = false;
+    apiFetch<{ artifacts?: { name: string }[] }>(`/api/v1/runs/${runId}/artifacts`)
+      .then((body) => {
+        if (!disposed) setArtifacts((body.artifacts ?? []).map((item) => item.name));
+      })
+      .catch(() => {
+        if (!disposed) setArtifacts([]);
       });
     return () => {
       disposed = true;
@@ -163,15 +187,51 @@ export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
 
   const live = ["queued", "preparing", "running", "paused", "evaluating"].includes(state);
   const terminal = TERMINAL_STATES.includes(state);
-  // best.ckpt is written by CNN + RT-DETR; weights.pth only by RT-DETR [S14b].
-  const showBestCkpt = info?.model_family === "cnn" || info?.model_family === "rtdetr";
-  const showWeightsPth = info?.model_family === "rtdetr";
+  const hasArtifact = (name: string): boolean => artifacts.includes(name);
+  // A "0%" reading on a finished run means no real measurement: show n/a.
   const gpuLabel =
     stream.system?.gpu_available === false
       ? "No GPU detected"
-      : stream.system?.gpu_util != null
+      : stream.system?.gpu_util != null && stream.system.gpu_util > 0
         ? `${stream.system.gpu_util}%`
-        : "—";
+        : "n/a";
+
+  async function rerun(): Promise<void> {
+    if (!info?.verification_id) {
+      setLoadError("This run has no verification to reuse.");
+      return;
+    }
+    setLoadError(null);
+    try {
+      const created = await apiFetch<{ id: string }>("/api/v1/runs", {
+        method: "POST",
+        body: JSON.stringify({
+          verification_id: info.verification_id,
+          name: `${info.name ?? "run"}-again`,
+          config: info.config,
+          checkpoint_catalog_id: info.checkpoint?.catalog_id ?? null,
+          from_scratch: false,
+        }),
+      });
+      onNavigate(created.id);
+    } catch (exc) {
+      setLoadError(exc instanceof Error ? exc.message : "Could not start a new run.");
+    }
+  }
+
+  function editAndRun(): void {
+    if (!info?.verification_id) {
+      setLoadError("This run has no verification to reuse.");
+      return;
+    }
+    onEditRun({
+      verificationId: info.verification_id,
+      config: info.config,
+      modelFamily: info.model_family,
+      checkpointCatalogId: info.checkpoint?.catalog_id ?? null,
+      fromScratch: !info.checkpoint?.catalog_id,
+    });
+  }
 
   async function downloadArtifact(name: string): Promise<void> {
     setDownloadError(null);
@@ -259,7 +319,23 @@ export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
             GPU: <span className="font-mono">{gpuLabel}</span>
           </span>
           <span className="ml-auto flex gap-2">
-            {showBestCkpt && (
+            <button
+              type="button"
+              data-testid="run-again"
+              onClick={() => void rerun()}
+              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-on-accent hover:bg-accent-hover"
+            >
+              Run again
+            </button>
+            <button
+              type="button"
+              data-testid="edit-and-run"
+              onClick={editAndRun}
+              className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-bg"
+            >
+              Edit & run
+            </button>
+            {hasArtifact("checkpoints/best.ckpt") && (
               <button
                 type="button"
                 data-testid="download-best"
@@ -269,7 +345,7 @@ export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
                 Download best.ckpt
               </button>
             )}
-            {showWeightsPth && (
+            {hasArtifact("checkpoints/weights.pth") && (
               <button
                 type="button"
                 data-testid="download-weights"

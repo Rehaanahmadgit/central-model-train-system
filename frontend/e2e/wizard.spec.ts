@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { crc32 } from "node:zlib";
 
 // One E2E smoke test [doc 11 §1, DIST-11]: the sample dataset flows through
 // the 5-step wizard into a real RandomForest run and reaches `completed`.
@@ -29,6 +30,161 @@ test("sample dataset -> RandomForest -> verify -> train -> completed", async ({ 
 
   await expect(page.getByTestId("run-state")).toHaveText("completed", { timeout: 90_000 });
 
+  // Terminal run: "Run again" / "Edit & run" are available, but a RandomForest
+  // run has no checkpoints, so no download buttons appear [doc 09 §3].
+  await expect(page.getByTestId("run-again")).toBeVisible();
+  await expect(page.getByTestId("edit-and-run")).toBeVisible();
+  await expect(page.getByTestId("download-best")).toHaveCount(0);
+  await expect(page.getByTestId("download-weights")).toHaveCount(0);
+
   // Capture the finished LiveRun page as an artifact for review.
   await page.screenshot({ path: "test-results/liverun-completed.png", fullPage: true });
 });
+
+// --- helpers ---------------------------------------------------------------
+
+const PNG_16PX = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP8z0AaYCJR/aiGUQ1DSAMAQC4BH2bjRnMAAAAASUVORK5CYII=",
+  "base64",
+);
+
+// Minimal stored (uncompressed) ZIP writer; Playwright has no built-in zipper.
+function storedZip(entries: Record<string, Buffer>): Buffer {
+  const chunks: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const [name, data] of Object.entries(entries)) {
+    const nameBuf = Buffer.from(name);
+    const crc = crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0, 8); // method: stored
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    chunks.push(local, nameBuf, data);
+
+    const cent = Buffer.alloc(46);
+    cent.writeUInt32LE(0x02014b50, 0);
+    cent.writeUInt16LE(20, 4);
+    cent.writeUInt16LE(20, 6);
+    cent.writeUInt32LE(crc, 16);
+    cent.writeUInt32LE(data.length, 20);
+    cent.writeUInt32LE(data.length, 24);
+    cent.writeUInt16LE(nameBuf.length, 28);
+    cent.writeUInt32LE(offset, 42);
+    central.push(cent, nameBuf);
+    offset += local.length + nameBuf.length + data.length;
+  }
+  const centralSize = central.reduce((n, b) => n + b.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(Object.keys(entries).length, 8);
+  end.writeUInt16LE(Object.keys(entries).length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...chunks, ...central, end]);
+}
+
+function makeYoloZip(): Buffer {
+  const entries: Record<string, Buffer> = {
+    "data.yaml": Buffer.from("names:\n  - apple\n  - orange\n"),
+    "images/img0.png": PNG_16PX,
+    "images/img1.png": PNG_16PX,
+    "images/img2.png": PNG_16PX,
+    "images/img3.png": PNG_16PX,
+    "labels/img0.txt": Buffer.from("0 0.25 0.25 0.5 0.5\n"),
+    "labels/img1.txt": Buffer.from("1 0.25 0.25 0.5 0.5\n"),
+    "labels/img2.txt": Buffer.from("0 0.25 0.25 0.5 0.5\n"),
+    "labels/img3.txt": Buffer.from("1 0.25 0.25 0.5 0.5\n"),
+  };
+  return storedZip(entries);
+}
+
+// Configure must prefill from the verifier's recommended_hparams and
+// auto-fill the recommended checkpoint (GPU "full" preset simulated via the
+// report route so the test is deterministic on CPU).
+test("wizard prefills Configure from recommended_hparams and checkpoint", async ({ page }) => {
+  let postedPreset: string | null = null;
+  await page.route("**/api/v1/verifications", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as { preset?: string };
+      postedPreset = body.preset ?? null;
+    }
+    await route.continue();
+  });
+  await page.route("**/api/v1/verifications/*", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      json: {
+        id: "ver_mock",
+        status: "passed_with_warnings",
+        checks: [
+          {
+            name: "archive_integrity",
+            status: "pass",
+            severity: "error",
+            message: "tree is clean",
+            details: {},
+            fix_hint: null,
+            samples: [],
+          },
+        ],
+        derived: {
+          task_type: "object_detection",
+          format: "yolo",
+          recommended_hparams: {
+            preset: "full",
+            epochs: 20,
+            batch_size: 1,
+            imgsz: 640,
+            lr: 0.0001,
+            freeze_backbone: true,
+            device: "cuda",
+            model_family: "rtdetr",
+          },
+          recommended_checkpoints: [
+            {
+              catalog_id: "rtdetr-r18vd@coco-1.0",
+              score: 10,
+              reason: "exact task match",
+              local: true,
+              downloadable: true,
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "New training" }).click();
+  await page.locator("#dataset-file-input").setInputFiles({
+    name: "apple-orange.zip",
+    mimeType: "application/zip",
+    buffer: makeYoloZip(),
+  });
+
+  await page.getByTestId("model-rtdetr").click();
+  await page.getByTestId("start-verification").click();
+  await expect(page.getByText("Dataset verified successfully")).toBeVisible({ timeout: 60_000 });
+  const ack = page.getByTestId("ack-warnings");
+  if (await ack.isVisible()) await ack.check();
+  await page.getByTestId("verify-next").click();
+
+  // The wizard must ask the backend to auto-resolve the preset (full on GPU).
+  expect(postedPreset).toBe("auto");
+
+  const epochs = page.locator("label").filter({ hasText: "epochs" }).locator("input");
+  await expect(epochs).toHaveValue("20");
+  const imgsz = page.locator("label").filter({ hasText: "imgsz" }).locator("input");
+  await expect(imgsz).toHaveValue("640");
+  const devPreset = page.locator("label").filter({ hasText: "dev_preset" }).locator("input");
+  await expect(devPreset).not.toBeChecked();
+  await expect(page.getByTestId("run-target")).toContainText("GPU (full)");
+  const checkpoint = page.locator('input[aria-label="Checkpoint catalog id"]');
+  await expect(checkpoint).toHaveValue("rtdetr-r18vd@coco-1.0");
+});
+

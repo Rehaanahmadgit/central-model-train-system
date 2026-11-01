@@ -15,10 +15,19 @@ const LiveRun = lazy(() =>
 
 type View = "home" | "runs" | "verify" | "wizard" | "checkpoints";
 
+interface EditRunState {
+  verificationId: string;
+  config: Record<string, unknown>;
+  modelFamily: string;
+  checkpointCatalogId: string | null;
+  fromScratch: boolean;
+}
+
 export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [view, setView] = useState<View>("home");
   const [openRunId, setOpenRunId] = useState<string | null>(null);
+  const [editRun, setEditRun] = useState<EditRunState | null>(null);
   const [securityWarning, setSecurityWarning] = useState<string | null>(null);
 
   useEffect(() => {
@@ -73,6 +82,11 @@ export default function App() {
                 theme={theme}
                 onBack={() => setOpenRunId(null)}
                 onNavigate={(runId) => setOpenRunId(runId)}
+                onEditRun={(edit) => {
+                  setEditRun(edit);
+                  setOpenRunId(null);
+                  setView("wizard");
+                }}
               />
             </Suspense>
           ) : view === "runs" ? (
@@ -99,7 +113,9 @@ export default function App() {
             </section>
           ) : view === "wizard" ? (
             <Wizard
+              edit={editRun}
               onTrained={(runId) => {
+                setEditRun(null);
                 setOpenRunId(runId);
                 setView("runs");
               }}

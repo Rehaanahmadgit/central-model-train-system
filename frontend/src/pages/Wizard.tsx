@@ -9,8 +9,17 @@ import {
   type Derived,
 } from "../hooks/useVerificationStream";
 
+interface WizardEditRun {
+  verificationId: string;
+  config: Record<string, unknown>;
+  modelFamily: string;
+  checkpointCatalogId: string | null;
+  fromScratch: boolean;
+}
+
 interface WizardProps {
   onTrained: (runId: string) => void;
+  edit?: WizardEditRun | null;
 }
 
 interface ModelInfo {
@@ -35,7 +44,7 @@ function stepState(current: number, index: number): "done" | "current" | "todo" 
   return index < current ? "done" : index === current ? "current" : "todo";
 }
 
-export function Wizard({ onTrained }: WizardProps) {
+export function Wizard({ onTrained, edit = null }: WizardProps) {
   const [step, setStep] = useState(0);
   const [dataset, setDataset] = useState<DatasetUploaded | null>(null);
   const [model, setModel] = useState<ModelInfo | null>(null);
@@ -48,9 +57,32 @@ export function Wizard({ onTrained }: WizardProps) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // "Edit & run" from the Live Run page: jump straight to Configure with the
+  // previous run's config + checkpoint [doc 09 §3].
+  useEffect(() => {
+    if (!edit) return;
+    let disposed = false;
+    apiFetch<{ items: ModelInfo[] }>("/api/v1/models")
+      .then((body) => {
+        if (disposed) return;
+        const found = body.items.find((item) => item.family === edit.modelFamily);
+        if (!found) return;
+        setModel(found);
+        setConfig({ ...edit.config });
+        setCheckpointCatalogId(edit.checkpointCatalogId);
+        setFromScratch(edit.fromScratch);
+        setVerificationId(edit.verificationId);
+        setStep(3);
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, [edit]);
+
   // Prefill Configure with the verifier's recommended_hparams [doc 06 §6]:
-  // copy every schema key the recommendation supplies, then set the
-  // dev_preset boolean from the recommended preset.
+  // copy every schema key the recommendation supplies, cap batch_size for a
+  // 4 GB GPU, then set the dev_preset boolean from the recommended preset.
   function applyRecommendedHparams(
     recommended: Record<string, unknown> | undefined,
     schema: ModelInfo["hparam_schema"],
@@ -61,6 +93,9 @@ export function Wizard({ onTrained }: WizardProps) {
       const next: Record<string, unknown> = { ...current };
       for (const key of keys) {
         if (key in recommended) next[key] = recommended[key];
+      }
+      if (typeof next.batch_size === "number" && next.batch_size > 4) {
+        next.batch_size = 4;
       }
       if (typeof recommended.preset === "string") {
         next.dev_preset = recommended.preset === "dev";
@@ -146,6 +181,15 @@ export function Wizard({ onTrained }: WizardProps) {
             setVerificationId(id);
             setDerived(report);
             applyRecommendedHparams(report?.recommended_hparams, model.hparam_schema);
+            // Auto-fill the checkpoint box when a downloadable/cached entry is
+            // recommended; "Train from scratch" stays OFF [doc 06 §6, doc 07 §5].
+            const top = report?.recommended_checkpoints?.[0];
+            if (top && (top.downloadable || top.local)) {
+              setCheckpointCatalogId(top.catalog_id);
+              setFromScratch(false);
+            } else {
+              setCheckpointCatalogId(null);
+            }
             setStep(3);
           }}
           onBack={() => setStep(1)}
@@ -477,7 +521,7 @@ function VerifyStep({ datasetHash, modelFamily, onDone, onBack }: VerifyStepProp
     try {
       const body = await apiFetch<{ id: string }>("/api/v1/verifications", {
         method: "POST",
-        body: JSON.stringify({ dataset_hash: datasetHash, model_family: modelFamily, preset: "dev" }),
+        body: JSON.stringify({ dataset_hash: datasetHash, model_family: modelFamily, preset: "auto" }),
       });
       setVerificationId(body.id);
     } catch (exc) {
@@ -550,6 +594,8 @@ function ConfigureStep(props: ConfigureStepProps) {
   const basicKeys = ["epochs", "lr", "batch_size", "imgsz", "dev_preset", "amp", "freeze_backbone"];
   const visibleKeys = advanced ? Object.keys(properties) : Object.keys(properties).filter((key) => basicKeys.includes(key));
   const runTarget = config.dev_preset === false ? "GPU (full)" : "CPU (dev preset)";
+  // A frozen backbone with no pretrained checkpoint cannot learn [rtdetr WARNING].
+  const fromScratchFrozen = props.fromScratch && config.freeze_backbone === true;
 
   function setValue(key: string, value: unknown): void {
     onChange({ ...config, [key]: value });
@@ -597,6 +643,12 @@ function ConfigureStep(props: ConfigureStepProps) {
           <input type="checkbox" checked={props.fromScratch} onChange={(event) => props.onFromScratch(event.target.checked)} />
           Train from scratch
         </label>
+        {fromScratchFrozen && (
+          <p role="alert" data-testid="from-scratch-frozen-warning" className="rounded-md border border-warning bg-warning/10 p-2 text-xs text-warning">
+            Training from scratch with a frozen backbone cannot learn — load a pretrained
+            checkpoint or turn off freeze_backbone.
+          </p>
+        )}
         {!props.fromScratch && (
           <input
             type="text"
