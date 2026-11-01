@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { apiFetch } from "../lib/api";
+import { apiFetch, getAccessToken } from "../lib/api";
 import { ConnectionIndicator } from "../components/ConnectionIndicator";
 import { MetricChart } from "../components/MetricChart";
 import { useRunStream } from "../hooks/useRunStream";
@@ -49,6 +49,8 @@ const STATE_COLORS: Record<string, string> = {
   interrupted: "bg-warning",
 };
 
+const TERMINAL_STATES = ["completed", "failed", "stopped", "interrupted"];
+
 function fmtElapsed(seconds: number): string {
   const whole = Math.floor(seconds);
   const h = Math.floor(whole / 3600);
@@ -73,12 +75,15 @@ export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
   const stream = useRunStream(runId);
   const [info, setInfo] = useState<RunInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const [logQuery, setLogQuery] = useState("");
   const [logLevel, setLogLevel] = useState("all");
   const [tab, setTab] = useState<"live" | "evaluation">("live");
 
-  // Static run info (run.json): params, checkpoint, seed, env, timestamps.
+  // Run info (run.json): params, checkpoint, seed, env, timestamps. Refetched
+  // on every state transition so Started/Finished/Task/best stay current once
+  // the worker writes them (the WS only carries state + metrics) [doc 09 §3].
   useEffect(() => {
     let disposed = false;
     apiFetch<RunInfo>(`/api/v1/runs/${runId}`)
@@ -91,7 +96,7 @@ export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
     return () => {
       disposed = true;
     };
-  }, [runId]);
+  }, [runId, stream.runState]);
 
   // Ticking clock for elapsed/ETA while a run is live.
   useEffect(() => {
@@ -157,6 +162,41 @@ export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
   }
 
   const live = ["queued", "preparing", "running", "paused", "evaluating"].includes(state);
+  const terminal = TERMINAL_STATES.includes(state);
+  // best.ckpt is written by CNN + RT-DETR; weights.pth only by RT-DETR [S14b].
+  const showBestCkpt = info?.model_family === "cnn" || info?.model_family === "rtdetr";
+  const showWeightsPth = info?.model_family === "rtdetr";
+  const gpuLabel =
+    stream.system?.gpu_available === false
+      ? "No GPU detected"
+      : stream.system?.gpu_util != null
+        ? `${stream.system.gpu_util}%`
+        : "—";
+
+  async function downloadArtifact(name: string): Promise<void> {
+    setDownloadError(null);
+    try {
+      const headers: Record<string, string> = {};
+      const token = getAccessToken();
+      if (token) headers["X-Access-Token"] = token;
+      const response = await fetch(`/api/v1/runs/${runId}/artifacts/${name}`, { headers });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
+        throw new Error(body?.error?.message ?? `Download failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = name.split("/").pop() ?? "artifact";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (exc) {
+      setDownloadError(exc instanceof Error ? exc.message : "Download failed.");
+    }
+  }
 
   return (
     <section className="flex flex-col gap-6">
@@ -202,6 +242,48 @@ export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
 
       {loadError && <p role="alert" className="rounded-md border border-danger bg-surface p-3 text-sm text-danger">{loadError}</p>}
 
+      {terminal && (
+        <div data-testid="run-finished" className="flex flex-wrap items-center gap-4 rounded-lg border border-border bg-surface p-4">
+          <h3 className="text-sm font-semibold">Run finished</h3>
+          <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold text-white ${STATE_COLORS[state] ?? "bg-text-secondary"}`}>
+            {state}
+          </span>
+          <span className="text-sm">
+            Best:{" "}
+            <span className="font-mono">
+              {info?.best?.metric ? `${info.best.metric} ${info?.best?.value ?? ""}` : "—"}
+              {info?.best?.epoch ? ` (epoch ${info.best.epoch})` : ""}
+            </span>
+          </span>
+          <span className="text-sm">
+            GPU: <span className="font-mono">{gpuLabel}</span>
+          </span>
+          <span className="ml-auto flex gap-2">
+            {showBestCkpt && (
+              <button
+                type="button"
+                data-testid="download-best"
+                onClick={() => void downloadArtifact("checkpoints/best.ckpt")}
+                className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-bg"
+              >
+                Download best.ckpt
+              </button>
+            )}
+            {showWeightsPth && (
+              <button
+                type="button"
+                data-testid="download-weights"
+                onClick={() => void downloadArtifact("checkpoints/weights.pth")}
+                className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-bg"
+              >
+                Download weights.pth
+              </button>
+            )}
+          </span>
+        </div>
+      )}
+      {downloadError && <p role="alert" className="rounded-md border border-danger bg-surface p-3 text-sm text-danger">{downloadError}</p>}
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatTile label="Elapsed" value={fmtElapsed(elapsedSeconds)} />
         <StatTile label="ETA" value={etaSeconds ? fmtElapsed(etaSeconds) : "—"} hint={totalEpochs ? `epoch ${currentEpoch}/${totalEpochs}` : undefined} />
@@ -239,7 +321,7 @@ export function LiveRun({ runId, theme, onBack, onNavigate }: LiveRunProps) {
         <div className="rounded-lg border border-border bg-surface p-4">
           <h3 className="mb-2 text-sm font-semibold">System</h3>
           <div className="space-y-2 text-sm">
-            <div className="flex justify-between"><span className="text-text-secondary">GPU</span><span>{stream.system?.gpu_util != null ? `${stream.system.gpu_util}%` : "No GPU detected"}</span></div>
+            <div className="flex justify-between"><span className="text-text-secondary">GPU</span><span>{gpuLabel}</span></div>
             <div className="flex justify-between"><span className="text-text-secondary">CPU</span><span>{stream.system?.cpu != null ? `${stream.system.cpu}%` : "—"}</span></div>
             <div className="flex justify-between"><span className="text-text-secondary">RAM</span><span>{stream.system?.ram_mb != null ? `${Math.round(stream.system.ram_mb)} MB` : "—"}</span></div>
           </div>
@@ -348,6 +430,10 @@ interface EvalReport {
   confusion_matrix?: number[][];
   per_class?: { class_id: number; support: number; precision: number; recall: number; f1: number }[];
   samples?: number;
+  // Detection (RT-DETR) [doc 08 §6]: mAP@0.5 + per-class AP keyed by name.
+  mAP50?: number;
+  per_class_AP?: Record<string, number>;
+  class_names?: string[];
 }
 
 function EvaluationPanel({ runId }: { runId: string }) {
@@ -383,6 +469,39 @@ function EvaluationPanel({ runId }: { runId: string }) {
 
   const matrix = report.confusion_matrix;
   const classes = report.classes ?? [];
+  const isDetection = report.mAP50 !== undefined;
+
+  if (isDetection) {
+    return (
+      <div className="flex flex-col gap-6">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <StatTile label="mAP50" value={report.mAP50!.toFixed(4)} />
+          <StatTile label="Samples" value={String(report.samples ?? "—")} />
+        </div>
+        {report.per_class_AP && Object.keys(report.per_class_AP).length > 0 && (
+          <div className="rounded-lg border border-border bg-surface p-4">
+            <h3 className="mb-2 text-sm font-semibold">Per-class AP</h3>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-text-secondary">
+                  <th className="p-1 text-left">Class</th>
+                  <th className="p-1 text-right">AP</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(report.per_class_AP).map(([name, ap]) => (
+                  <tr key={name}>
+                    <td className="border-b border-border p-1 font-mono">{name}</td>
+                    <td className="border-b border-border p-1 text-right font-mono">{ap.toFixed(4)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">

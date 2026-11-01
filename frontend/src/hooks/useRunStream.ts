@@ -29,6 +29,7 @@ export interface TimelineEvent {
 }
 
 export interface SystemStat {
+  gpu_available: boolean | null;
   gpu_util: number | null;
   gpu_mem_mb: number | null;
   cpu: number | null;
@@ -192,6 +193,7 @@ export function useRunStream(runId: string | null): StreamState {
         buffer.events = buffer.events.slice(-MAX_EVENTS);
       } else if (message.type === "system") {
         buffer.system = {
+          gpu_available: typeof data.gpu_available === "boolean" ? data.gpu_available : null,
           gpu_util: typeof data.gpu_util === "number" ? data.gpu_util : null,
           gpu_mem_mb: typeof data.gpu_mem_mb === "number" ? data.gpu_mem_mb : null,
           cpu: typeof data.cpu === "number" ? data.cpu : null,
