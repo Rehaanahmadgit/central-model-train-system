@@ -115,3 +115,12 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 
 ## Non-goal guards (checked every turn)
 - No database introduced. No client/user info introduced.
+
+## Slice A — honest evaluation (2026-11-01)
+- RT-DETR: `test` split held out (never trained on, never used for checkpoint selection); `unspecified` → train; no-val datasets get a deterministic seeded 80/20 split. Final metrics are read off `best.ckpt`.
+- `evaluation.json` now has `val` + `test` (or `test: null` + `test_reason: "no test split"`), per-split `warning` when a split has < 30 images, and the old top-level keys still carry the val numbers (D116, D117).
+- Evaluation tab: val mAP50 / test mAP50 tiles, per-class AP for both splits side by side, plain-words notes for "no test split" and "small split".
+- Live Run: a finished run no longer shows a "Reconnecting" badge (terminal state stops the reconnect loop) (D119).
+- Metric chart: loss on the primary axis, mAP/accuracy on a fixed 0-1 right axis, lr on its own axis (D118). Bug reproduced first (mAP used ~7% of the plot height).
+- Tests: `backend/tests/test_rtdetr.py` (split held out, deterministic fallback, report shape, `test: null`, small-split warning, best-checkpoint reload), `frontend/e2e/chart-axes.spec.ts` + terminal-state cases in `runstream-logic.spec.ts`.
+- `make verify` green.

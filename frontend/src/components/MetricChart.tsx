@@ -1,6 +1,7 @@
 import * as echarts from "echarts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MetricPoint } from "../hooks/useRunStream";
+import { LR_AXIS, SCORE_AXIS, axisIndexFor } from "../lib/chartAxes";
 
 interface MetricChartProps {
   metrics: MetricPoint[];
@@ -53,7 +54,6 @@ export function MetricChart({ metrics, theme }: MetricChartProps) {
     const chart = chartRef.current;
     if (!chart) return;
     const steps = [...new Set(metrics.map((point) => point.step))].sort((a, b) => a - b);
-    const isLr = (name: string): boolean => name === "lr";
     const series = seriesNames.map((name) => {
       const raw = steps.map((step) => {
         const points = metrics.filter((point) => point.name === name && point.step === step);
@@ -65,7 +65,7 @@ export function MetricChart({ metrics, theme }: MetricChartProps) {
         type: "line" as const,
         showSymbol: false,
         smooth: smoothing,
-        yAxisIndex: isLr(name) ? 1 : 0,
+        yAxisIndex: axisIndexFor(name),
         connectNulls: false,
         data: steps.map((step, index) => {
           const value = values[index];
@@ -73,6 +73,9 @@ export function MetricChart({ metrics, theme }: MetricChartProps) {
         }),
       };
     });
+    // Only draw an axis that something actually uses (no empty "score" axis on
+    // a pure loss run).
+    const usedAxes = new Set(series.map((item) => item.yAxisIndex));
     const styles = getComputedStyle(document.documentElement);
     chart.setOption({
       animation: false,
@@ -93,13 +96,29 @@ export function MetricChart({ metrics, theme }: MetricChartProps) {
       yAxis: [
         {
           type: "value",
-          name: "loss / metric",
+          name: "loss",
+          position: "left",
           axisLabel: { color: styles.getPropertyValue("--th-text-secondary") },
           splitLine: { lineStyle: { color: styles.getPropertyValue("--th-border") } },
         },
         {
+          // mAP / accuracy / f1 live here: fixed 0..1 so the curve is readable
+          // next to a loss that can be 0..15.
+          type: "value",
+          name: "score",
+          position: "right",
+          min: 0,
+          max: 1,
+          show: usedAxes.has(SCORE_AXIS),
+          axisLabel: { color: styles.getPropertyValue("--th-text-secondary") },
+          splitLine: { show: false },
+        },
+        {
           type: "value",
           name: "lr",
+          position: "right",
+          offset: 56,
+          show: usedAxes.has(LR_AXIS),
           axisLabel: { color: styles.getPropertyValue("--th-text-secondary") },
           splitLine: { show: false },
         },
@@ -125,7 +144,7 @@ export function MetricChart({ metrics, theme }: MetricChartProps) {
       <div
         ref={containerRef}
         role="img"
-        aria-label="Live training metrics: loss, accuracy and learning rate"
+        aria-label="Live training metrics: loss (left axis), scores 0-1 (right axis) and learning rate"
         className="h-96 w-full rounded-lg border border-border bg-surface p-2"
       />
     </div>

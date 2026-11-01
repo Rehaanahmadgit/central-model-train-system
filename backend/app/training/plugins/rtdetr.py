@@ -49,6 +49,12 @@ WEIGHT_DICT = {"loss_vfl": 1, "loss_bbox": 5, "loss_giou": 2}
 LOSSES = ["vfl", "boxes"]
 MATCHER_COSTS = {"cost_class": 2, "cost_bbox": 5, "cost_giou": 2}
 
+# Below this many images a split mAP is honest but noisy; the UI says so.
+SMALL_VAL_THRESHOLD = 30
+# Predictions kept in predictions.json (IoU 0.5 matching for the counts).
+DEFAULT_SCORE_THRESHOLD = 0.25
+MATCH_IOU = 0.5
+
 
 def build_r18vd(
     num_classes: int, eval_spatial_size: list[int] | tuple[int, int] = (640, 640)
@@ -228,6 +234,36 @@ def _batches(items: list[Any], size: int) -> list[list[Any]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 
+def split_warning(sample_count: int) -> str | None:
+    """Plain-words caveat for a split too small to give a stable mAP."""
+    if sample_count >= SMALL_VAL_THRESHOLD:
+        return None
+    return f"only {sample_count} images: mAP50 will swing a lot between epochs and runs"
+
+
+def build_eval_report(
+    class_names: list[str],
+    val: dict[str, Any],
+    test: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """evaluation.json payload: per-split numbers + backward-compatible val keys.
+
+    ``val`` picks the best checkpoint, so it is optimistic; ``test`` is unseen.
+    The top-level ``mAP50``/``per_class_AP``/``samples`` stay the val numbers so
+    pre-test-split clients keep reading the same fields [doc 08 §6].
+    """
+    return {
+        "task": "object_detection",
+        "class_names": list(class_names),
+        "val": dict(val),
+        "test": dict(test) if test is not None else None,
+        "test_reason": None if test is not None else "no test split",
+        "mAP50": val["mAP50"],
+        "per_class_AP": dict(val["per_class_AP"]),
+        "samples": val["samples"],
+    }
+
+
 class RTDetrTrainer(TrainerPlugin):
     family = "rtdetr"
     supported_tasks = ["object_detection"]
@@ -297,9 +333,16 @@ class RTDetrTrainer(TrainerPlugin):
         self._amp = bool(ctx.config.get("amp", False))
         self._device = torch.device("cuda" if ctx.device.is_gpu else "cpu")
 
-        self._train_samples, self._val_samples = self._load_samples(ctx)
+        self._train_samples, self._val_samples, self._test_samples = self._load_samples(ctx)
         if not self._train_samples:
             raise ValueError("no labelled detection boxes in the manifest (train split empty)")
+        if len(self._val_samples) < SMALL_VAL_THRESHOLD:
+            ctx.emit_log(
+                "WARNING",
+                f"val split has only {len(self._val_samples)} images "
+                f"(< {SMALL_VAL_THRESHOLD}): mAP50 will swing a lot between epochs and runs; "
+                "the number is honest but not precise",
+            )
 
         self._model = build_r18vd(self._num_classes, eval_spatial_size=(self._imgsz, self._imgsz))
         freeze_backbone = bool(ctx.config.get("freeze_backbone", True))
@@ -358,10 +401,15 @@ class RTDetrTrainer(TrainerPlugin):
         self._best_epoch = 0
         freeze = bool(ctx.config.get("freeze_backbone", True))
         frozen = "backbone frozen" if freeze else "full model"
+        test_note = (
+            f"{len(self._test_samples)} held-out test"
+            if self._test_samples
+            else "no test split (final test mAP will be null)"
+        )
         ctx.emit_log(
             "INFO",
             f"rtdetr r18vd prepared: {len(self._train_samples)} train / "
-            f"{len(self._val_samples)} val images, {self._num_classes} classes, "
+            f"{len(self._val_samples)} val / {test_note} images, {self._num_classes} classes, "
             f"{frozen}, imgsz {self._imgsz}, amp {self._amp}",
         )
 
@@ -413,16 +461,22 @@ class RTDetrTrainer(TrainerPlugin):
         )
 
     def evaluate(self, ctx: RunContext) -> dict[str, Any]:
-        """Final detection metrics: mAP50 + per-class AP [doc 05 §5, doc 08 §6]."""
-        result = self._eval_map_dict()
-        names = getattr(self, "_class_names", [])
-        result["class_names"] = names
-        result["per_class_AP"] = {
-            names[cid]: round(ap, 4)
-            for cid, ap in result["per_class_AP"].items()
-            if cid < len(names)
-        }
-        result["samples"] = len(self._val_samples)
+        """Final detection metrics from the best weights: val + held-out test [doc 08 §6]."""
+        self._load_best_weights(ctx)
+        names = list(getattr(self, "_class_names", []))
+        val = self._eval_split(self._val_samples, names)
+        test = self._eval_split(self._test_samples, names) if self._test_samples else None
+        result = build_eval_report(names, val, test)
+        test_note = (
+            f"test/mAP50={test['mAP50']:.4f} on {test['samples']} images"
+            if test is not None
+            else "test=mAP50 not measured (no test split)"
+        )
+        ctx.emit_log(
+            "INFO",
+            f"evaluation (best weights): val/mAP50={val['mAP50']:.4f} on "
+            f"{val['samples']} images, {test_note}",
+        )
         return result
 
     def resume(self, ctx: RunContext, checkpoint_path: Path) -> None:
@@ -442,18 +496,27 @@ class RTDetrTrainer(TrainerPlugin):
 
     # -- internals -----------------------------------------------------------
 
-    def _load_samples(self, ctx: RunContext) -> tuple[list[Any], list[Any]]:
-        """Read manifest.parquet; boxes are [class_id, cx, cy, w, h] normalized."""
+    def _load_samples(
+        self, ctx: RunContext
+    ) -> tuple[list[Any], list[Any], list[Any]]:
+        """Read manifest.parquet; boxes are [class_id, cx, cy, w, h] normalized.
+
+        Returns ``(train, val, test)``. ``test`` is held out: never trained on
+        and never used to pick the best checkpoint [doc 06 §3]. ``unspecified``
+        rows are treated as train; a dataset with no ``val`` rows is split 80/20
+        here, shuffled with ``ctx.seed`` so the result is deterministic.
+        """
         table = pq.read_table(ctx.manifest_path)
         paths = table.column("path").to_pylist()
         splits = table.column("split").to_pylist()
         boxes_col = table.column("boxes").to_pylist()
         train: list[tuple[Path, list[list[float]]]] = []
         val: list[tuple[Path, list[list[float]]]] = []
+        test: list[tuple[Path, list[list[float]]]] = []
         dropped = 0
         for path, split, boxes_raw in zip(paths, splits, boxes_col, strict=False):
-            if split not in ("train", "val", "unspecified"):
-                continue  # "test" is held out and never trained on [doc 06 §3]
+            if split not in ("train", "val", "test", "unspecified"):
+                continue  # unknown split label: do not guess
             full = ctx.dataset_root / path
             if not full.is_file():
                 continue
@@ -477,17 +540,26 @@ class RTDetrTrainer(TrainerPlugin):
                 continue
             if split == "val":
                 val.append((full, boxes))
+            elif split == "test":
+                test.append((full, boxes))
             else:  # train / unspecified -> train by default
                 train.append((full, boxes))
-        if not train and not val:
-            return [], []
-        if not val:
-            boundary = max(1, int(0.8 * len(train)))
-            val = train[boundary:]
-            train = train[:boundary]
+        if not train and not val and not test:
+            return [], [], []
+        if not val and len(train) > 1:
+            # Deterministic 80/20 fallback: same dataset + seed -> same split.
+            shuffled = list(train)
+            random.Random(ctx.seed).shuffle(shuffled)
+            boundary = min(len(shuffled) - 1, max(1, round(0.8 * len(shuffled))))
+            train, val = shuffled[:boundary], shuffled[boundary:]
+            ctx.emit_log(
+                "INFO",
+                f"no val rows in the manifest: {len(train)} train / {len(val)} val "
+                f"(deterministic 80/20, seed {ctx.seed})",
+            )
         if dropped:
             ctx.emit_log("INFO", f"dropped {dropped} images with no valid boxes")
-        return train, val
+        return train, val, test
 
     def _collate(
         self, batch: list[tuple[Path, list[list[float]]]]
@@ -526,8 +598,13 @@ class RTDetrTrainer(TrainerPlugin):
         self._optimizer.zero_grad(set_to_none=True)
         return float(loss.item())
 
-    def _eval_map_dict(self) -> dict[str, Any]:
-        """Run the postprocessor over the val split and compute mAP@0.5."""
+    def _eval_map_dict(
+        self,
+        samples: list[tuple[Path, list[list[float]]]] | None = None,
+    ) -> dict[str, Any]:
+        """Run the postprocessor over ``samples`` (default: val) and compute mAP@0.5."""
+        if samples is None:
+            samples = self._val_samples
         self._model.eval()
         gt: dict[int, list[tuple[int, tuple[float, float, float, float]]]] = defaultdict(list)
         pred: dict[int, list[tuple[int, float, tuple[float, float, float, float]]]] = defaultdict(
@@ -536,7 +613,7 @@ class RTDetrTrainer(TrainerPlugin):
         image_id = 0
         enabled = self._amp and self._device.type == "cuda"
         with torch.no_grad():
-            for batch in _batches(self._val_samples, self._batch_size):
+            for batch in _batches(samples, self._batch_size):
                 images, targets = self._collate(batch)
                 with torch.autocast("cuda", dtype=torch.float16, enabled=enabled):
                     outputs = self._model(images)
@@ -572,6 +649,42 @@ class RTDetrTrainer(TrainerPlugin):
 
     def _evaluate_map(self) -> float:
         return float(self._eval_map_dict()["mAP50"])
+
+    def _eval_split(
+        self, samples: list[tuple[Path, list[list[float]]]], names: list[str]
+    ) -> dict[str, Any]:
+        """mAP50 + per-class AP (keyed by class name) for one split."""
+        raw = self._eval_map_dict(samples)
+        metrics: dict[str, Any] = {
+            "mAP50": round(float(raw["mAP50"]), 4),
+            "per_class_AP": {
+                names[cid]: round(float(ap), 4)
+                for cid, ap in raw["per_class_AP"].items()
+                if cid < len(names)
+            },
+            "samples": len(samples),
+        }
+        if len(samples) < SMALL_VAL_THRESHOLD:
+            metrics["warning"] = split_warning(len(samples))
+        return metrics
+
+    def _load_best_weights(self, ctx: RunContext) -> None:
+        """Evaluate the checkpoint that was actually kept, not the last epoch."""
+        best = ctx.output_dir.parent / "checkpoints" / "best.ckpt"
+        if not best.is_file():
+            ctx.emit_log(
+                "INFO", "no best.ckpt found: evaluating the final epoch weights"
+            )
+            return
+        payload = torch.load(best, map_location=self._device, weights_only=True)
+        state = payload.get("model_state") if isinstance(payload, dict) else None
+        if not isinstance(state, dict):
+            ctx.emit_log("WARNING", f"{best.name} has no model_state: evaluating last weights")
+            return
+        self._model.load_state_dict(state)
+        epoch = payload.get("epoch") if isinstance(payload, dict) else None
+        self._model.eval()
+        ctx.emit_log("INFO", f"evaluation uses best weights from {best.name} (epoch {epoch})")
 
     def _save(self, ctx: RunContext, epoch: int, *, is_best: bool) -> None:
         checkpoints = ctx.output_dir.parent / "checkpoints"

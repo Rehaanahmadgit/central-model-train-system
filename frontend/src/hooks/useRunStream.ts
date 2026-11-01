@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { wsUrl } from "../lib/api";
-import { isDuplicateReplay } from "../lib/runStreamLogic";
+import { isDuplicateReplay, isTerminalRunState } from "../lib/runStreamLogic";
 
 export type StreamStatus = "connecting" | "live" | "reconnecting" | "closed";
 
@@ -233,6 +233,13 @@ export function useRunStream(runId: string | null): StreamState {
       socket.onclose = () => {
         socket = null;
         if (disposed) return;
+        // A finished run's stream is closed by the server on purpose: the
+        // snapshot already carried the terminal state, so do not reconnect.
+        if (isTerminalRunState(buffers.current.runState)) {
+          buffers.current.status = "closed";
+          dirty.current = true;
+          return;
+        }
         buffers.current.status = "reconnecting";
         dirty.current = true;
         retries += 1;

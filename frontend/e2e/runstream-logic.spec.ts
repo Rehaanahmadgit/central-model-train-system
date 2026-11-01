@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { isDuplicateReplay } from "../src/lib/runStreamLogic";
+import { isDuplicateReplay, isTerminalRunState } from "../src/lib/runStreamLogic";
 
 // Pure logic tests for the run WebSocket replay dedupe [doc 05 §8]. No
 // browser or backend needed: these assertions run in the Playwright runner.
@@ -29,4 +29,21 @@ test("unknown types and missing seq/snapshot are never duplicates", () => {
   expect(isDuplicateReplay("metric", undefined, 20)).toBe(false);
   expect(isDuplicateReplay("metric", 10, null)).toBe(false);
   expect(isDuplicateReplay("metric", 10, undefined)).toBe(false);
+});
+
+// --- terminal runs stop reconnecting (A3) ----------------------------------
+
+test("terminal run states are recognised (badge must not say Reconnecting)", () => {
+  for (const state of ["completed", "failed", "stopped", "interrupted"]) {
+    expect(isTerminalRunState(state)).toBe(true);
+  }
+});
+
+test("active and unknown states are not terminal", () => {
+  for (const state of ["queued", "preparing", "running", "paused", "evaluating"]) {
+    expect(isTerminalRunState(state)).toBe(false);
+  }
+  expect(isTerminalRunState(null)).toBe(false);
+  expect(isTerminalRunState(undefined)).toBe(false);
+  expect(isTerminalRunState("")).toBe(false);
 });

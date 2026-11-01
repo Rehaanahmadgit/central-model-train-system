@@ -3,6 +3,7 @@ import { apiFetch, getAccessToken } from "../lib/api";
 import { ConnectionIndicator } from "../components/ConnectionIndicator";
 import { MetricChart } from "../components/MetricChart";
 import { useRunStream } from "../hooks/useRunStream";
+import { isTerminalRunState } from "../lib/runStreamLogic";
 
 interface LiveRunProps {
   runId: string;
@@ -56,8 +57,6 @@ const STATE_COLORS: Record<string, string> = {
   stopped: "bg-text-secondary",
   interrupted: "bg-warning",
 };
-
-const TERMINAL_STATES = ["completed", "failed", "stopped", "interrupted"];
 
 function fmtElapsed(seconds: number): string {
   const whole = Math.floor(seconds);
@@ -125,7 +124,7 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
   // Ticking clock for elapsed/ETA while a run is live.
   useEffect(() => {
     const state = stream.runState ?? info?.state;
-    const live = state && !["completed", "failed", "stopped", "interrupted"].includes(state);
+    const live = state && !isTerminalRunState(state);
     if (!live) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
@@ -186,7 +185,7 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
   }
 
   const live = ["queued", "preparing", "running", "paused", "evaluating"].includes(state);
-  const terminal = TERMINAL_STATES.includes(state);
+  const terminal = isTerminalRunState(state);
   const hasArtifact = (name: string): boolean => artifacts.includes(name);
   // A "0%" reading on a finished run means no real measurement: show n/a.
   const gpuLabel =
@@ -268,7 +267,9 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
         <span data-testid="run-state" className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold text-white ${STATE_COLORS[state] ?? "bg-text-secondary"}`}>
           {state}
         </span>
-        <ConnectionIndicator status={stream.status} />
+        {/* A finished run has no live stream to indicate: the server closes it
+            on purpose, so a "Reconnecting" badge would be misleading. */}
+        {!terminal && <ConnectionIndicator status={stream.status} />}
         <span className="ml-auto flex gap-2">
           {state === "interrupted" && (
             <button
@@ -498,6 +499,14 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
 }
 
 
+interface SplitMetrics {
+  mAP50: number;
+  per_class_AP?: Record<string, number>;
+  samples?: number;
+  /** Present when the split is too small for a stable mAP [A2]. */
+  warning?: string;
+}
+
 interface EvalReport {
   task: string;
   accuracy?: number;
@@ -507,9 +516,97 @@ interface EvalReport {
   per_class?: { class_id: number; support: number; precision: number; recall: number; f1: number }[];
   samples?: number;
   // Detection (RT-DETR) [doc 08 §6]: mAP@0.5 + per-class AP keyed by name.
+  // The top-level keys are the val numbers (backward compatible); `val`/`test`
+  // separate the split that chose the checkpoint from the unseen one.
   mAP50?: number;
   per_class_AP?: Record<string, number>;
   class_names?: string[];
+  val?: SplitMetrics;
+  test?: SplitMetrics | null;
+  test_reason?: string | null;
+}
+
+// val drove checkpoint selection, test was never trained on: show both.
+function DetectionMetrics({ report }: { report: EvalReport }) {
+  const val: SplitMetrics =
+    report.val ?? {
+      mAP50: report.mAP50 ?? 0,
+      per_class_AP: report.per_class_AP,
+      samples: report.samples,
+    };
+  const test = report.test ?? null;
+  const classNames = [
+    ...new Set([...Object.keys(val.per_class_AP ?? {}), ...Object.keys(test?.per_class_AP ?? {})]),
+  ];
+  const fmt = (value: number | undefined): string =>
+    typeof value === "number" ? value.toFixed(4) : "—";
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatTile
+          label="val mAP50"
+          value={fmt(val.mAP50)}
+          hint="drove checkpoint selection"
+        />
+        <StatTile
+          label="test mAP50"
+          value={test ? fmt(test.mAP50) : "n/a"}
+          hint={test ? "held out, never trained on" : (report.test_reason ?? "no test split")}
+        />
+        <StatTile label="val images" value={String(val.samples ?? "—")} />
+        <StatTile label="test images" value={test ? String(test.samples ?? "—") : "—"} />
+      </div>
+
+      {!test && (
+        <p data-testid="no-test-split" className="rounded-md border border-border bg-surface p-3 text-xs text-text-secondary">
+          No held-out test split in this dataset, so there is no unseen-number yet. Every image
+          shown above was available for training or checkpoint selection — treat the val mAP as an
+          optimistic estimate. Add a <span className="font-mono">test/</span> folder and re-upload to
+          get an honest number.
+        </p>
+      )}
+      {[...(val.warning ? [val.warning] : []), ...(test?.warning ? [test.warning] : [])].map(
+        (warning) => (
+          <p
+            key={warning}
+            data-testid="small-split-warning"
+            className="rounded-md border border-warning bg-surface p-3 text-xs text-text-secondary"
+          >
+            Small split — {warning}.
+          </p>
+        ),
+      )}
+
+      {classNames.length > 0 && (
+        <div className="rounded-lg border border-border bg-surface p-4">
+          <h3 className="mb-2 text-sm font-semibold">Per-class AP</h3>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-text-secondary">
+                <th className="p-1 text-left">Class</th>
+                <th className="p-1 text-right">val AP</th>
+                <th className="p-1 text-right">test AP</th>
+              </tr>
+            </thead>
+            <tbody>
+              {classNames.map((name) => (
+                <tr key={name}>
+                  <td className="border-b border-border p-1 font-mono">{name}</td>
+                  <td className="border-b border-border p-1 text-right font-mono">
+                    {fmt(val.per_class_AP?.[name])}
+                  </td>
+                  <td className="border-b border-border p-1 text-right font-mono">
+                    {fmt(test?.per_class_AP?.[name])}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function EvaluationPanel({ runId }: { runId: string }) {
@@ -545,38 +642,10 @@ function EvaluationPanel({ runId }: { runId: string }) {
 
   const matrix = report.confusion_matrix;
   const classes = report.classes ?? [];
-  const isDetection = report.mAP50 !== undefined;
+  const isDetection = report.val !== undefined || report.mAP50 !== undefined;
 
   if (isDetection) {
-    return (
-      <div className="flex flex-col gap-6">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <StatTile label="mAP50" value={report.mAP50!.toFixed(4)} />
-          <StatTile label="Samples" value={String(report.samples ?? "—")} />
-        </div>
-        {report.per_class_AP && Object.keys(report.per_class_AP).length > 0 && (
-          <div className="rounded-lg border border-border bg-surface p-4">
-            <h3 className="mb-2 text-sm font-semibold">Per-class AP</h3>
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-text-secondary">
-                  <th className="p-1 text-left">Class</th>
-                  <th className="p-1 text-right">AP</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(report.per_class_AP).map(([name, ap]) => (
-                  <tr key={name}>
-                    <td className="border-b border-border p-1 font-mono">{name}</td>
-                    <td className="border-b border-border p-1 text-right font-mono">{ap.toFixed(4)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    );
+    return <DetectionMetrics report={report} />;
   }
 
   return (
