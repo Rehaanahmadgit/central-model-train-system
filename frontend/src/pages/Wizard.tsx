@@ -40,12 +40,34 @@ export function Wizard({ onTrained }: WizardProps) {
   const [dataset, setDataset] = useState<DatasetUploaded | null>(null);
   const [model, setModel] = useState<ModelInfo | null>(null);
   const [verificationId, setVerificationId] = useState<string | null>(null);
+  const [derived, setDerived] = useState<Derived | null>(null);
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [checkpointCatalogId, setCheckpointCatalogId] = useState<string | null>(null);
   const [fromScratch, setFromScratch] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Prefill Configure with the verifier's recommended_hparams [doc 06 §6]:
+  // copy every schema key the recommendation supplies, then set the
+  // dev_preset boolean from the recommended preset.
+  function applyRecommendedHparams(
+    recommended: Record<string, unknown> | undefined,
+    schema: ModelInfo["hparam_schema"],
+  ): void {
+    if (!recommended) return;
+    const keys = Object.keys(schema.properties ?? {});
+    setConfig((current) => {
+      const next: Record<string, unknown> = { ...current };
+      for (const key of keys) {
+        if (key in recommended) next[key] = recommended[key];
+      }
+      if (typeof recommended.preset === "string") {
+        next.dev_preset = recommended.preset === "dev";
+      }
+      return next;
+    });
+  }
 
   async function startTraining(): Promise<void> {
     setStarting(true);
@@ -120,8 +142,10 @@ export function Wizard({ onTrained }: WizardProps) {
         <VerifyStep
           datasetHash={dataset.dataset_hash}
           modelFamily={model.family}
-          onDone={(id) => {
+          onDone={(id, report) => {
             setVerificationId(id);
+            setDerived(report);
+            applyRecommendedHparams(report?.recommended_hparams, model.hparam_schema);
             setStep(3);
           }}
           onBack={() => setStep(1)}
@@ -145,6 +169,7 @@ export function Wizard({ onTrained }: WizardProps) {
           dataset={dataset}
           model={model}
           config={config}
+          taskType={derived?.task_type ?? null}
           checkpointCatalogId={checkpointCatalogId}
           fromScratch={fromScratch}
           starting={starting}
@@ -404,7 +429,7 @@ function ModelStep({ onSelect }: ModelStepProps) {
 interface VerifyStepProps {
   datasetHash: string;
   modelFamily: string;
-  onDone: (verificationId: string) => void;
+  onDone: (verificationId: string, report: Derived | null) => void;
   onBack: () => void;
 }
 
@@ -416,11 +441,17 @@ function VerifyStep({ datasetHash, modelFamily, onDone, onBack }: VerifyStepProp
   const [finalDerived, setFinalDerived] = useState<Derived | null>(null);
   const [finalChecks, setFinalChecks] = useState<CheckItem[] | null>(null);
 
-  const finished = stream.verificationStatus !== null;
+  const finished =
+    stream.verificationStatus === "passed" ||
+    stream.verificationStatus === "passed_with_warnings" ||
+    stream.verificationStatus === "failed";
   const passed = stream.verificationStatus === "passed" || stream.verificationStatus === "passed_with_warnings";
   const failed = stream.verificationStatus === "failed";
   const effectiveChecks = finalChecks ?? stream.checks;
   const hasWarnings = effectiveChecks.some((check) => check.status === "warn");
+  // Next is enabled only once the full report (derived facts + final checks)
+  // has loaded, so Configure prefills with the real recommendations [doc 06 §6].
+  const reportReady = finalDerived !== null && finalChecks !== null;
 
   useEffect(() => {
     if (!verificationId || !finished) return;
@@ -486,8 +517,8 @@ function VerifyStep({ datasetHash, modelFamily, onDone, onBack }: VerifyStepProp
         <button
           type="button"
           data-testid="verify-next"
-          disabled={!finished || !passed || (hasWarnings && !acknowledged)}
-          onClick={() => verificationId && onDone(verificationId)}
+          disabled={!finished || !passed || !reportReady || (hasWarnings && !acknowledged)}
+          onClick={() => verificationId && onDone(verificationId, finalDerived)}
           className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
         >
           Next →
@@ -516,8 +547,9 @@ function ConfigureStep(props: ConfigureStepProps) {
   const [advanced, setAdvanced] = useState(false);
   const properties = (model.hparam_schema?.properties ?? {}) as Record<string, { type?: string; default?: unknown; minimum?: number; maximum?: number }>;
 
-  const basicKeys = ["epochs", "lr", "batch_size", "imgsz"];
+  const basicKeys = ["epochs", "lr", "batch_size", "imgsz", "dev_preset", "amp", "freeze_backbone"];
   const visibleKeys = advanced ? Object.keys(properties) : Object.keys(properties).filter((key) => basicKeys.includes(key));
+  const runTarget = config.dev_preset === false ? "GPU (full)" : "CPU (dev preset)";
 
   function setValue(key: string, value: unknown): void {
     onChange({ ...config, [key]: value });
@@ -552,6 +584,9 @@ function ConfigureStep(props: ConfigureStepProps) {
           );
         })}
       </div>
+      <p data-testid="run-target" className="text-sm text-text-secondary">
+        Run on: <span className="font-semibold text-text">{runTarget}</span>
+      </p>
       <button type="button" onClick={() => setAdvanced((value) => !value)} className="self-start text-sm text-text-secondary hover:text-text">
         {advanced ? "Basic" : "Advanced"} settings
       </button>
@@ -588,6 +623,7 @@ interface TrainStepProps {
   dataset: DatasetUploaded;
   model: ModelInfo;
   config: Record<string, unknown>;
+  taskType: string | null;
   checkpointCatalogId: string | null;
   fromScratch: boolean;
   starting: boolean;
@@ -602,6 +638,7 @@ function TrainStep(props: TrainStepProps) {
         <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <div><dt className="text-text-secondary">Dataset</dt><dd>{props.dataset.dataset.name} ({props.dataset.dataset.file_count} files)</dd></div>
           <div><dt className="text-text-secondary">Model</dt><dd className="font-mono">{props.model.family}</dd></div>
+          <div><dt className="text-text-secondary">Task</dt><dd data-testid="train-task">{props.taskType ?? "—"}</dd></div>
           <div><dt className="text-text-secondary">Checkpoint</dt><dd>{props.fromScratch ? "from scratch" : props.checkpointCatalogId ?? "none"}</dd></div>
           <div><dt className="text-text-secondary">Hyperparameters</dt><dd className="font-mono text-xs">{JSON.stringify(props.config)}</dd></div>
         </dl>
