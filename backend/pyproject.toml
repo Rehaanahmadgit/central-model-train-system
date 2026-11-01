@@ -36,6 +36,9 @@ dev = [
 # and pulls the nvidia-*-cu12 runtime wheels as dependencies (D70).
 training = [
     "scikit-learn==1.9.1",
+    # Hungarian matching for RT-DETR [S14b]; already pulled by scikit-learn,
+    # declared explicitly because app/vendor/rtdetr/matcher.py imports it.
+    "scipy==1.18.1",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -44,6 +47,9 @@ packages = ["app"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+# Vendored upstream RT-DETR (Apache-2.0) is third-party code: keep it out of
+# our lint gates [S14a, D120].
+exclude = ["app/vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -52,6 +58,7 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.12"
 strict = true
 files = ["app"]
+exclude = ["app/vendor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

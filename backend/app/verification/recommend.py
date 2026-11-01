@@ -74,7 +74,10 @@ def rank_checkpoints(
                 "downloadable": entry.verified and not entry.source_uri.startswith("TODO(user)"),
             }
         )
-    ranked.sort(key=lambda item: (-item["score"], item["catalog_id"]))
+    # Downloadable entries first (verified sha256 + real source), then score.
+    # A placeholder/unverified entry must never outrank a real local/downloadable
+    # one [doc 07 §3.2, user bug 3].
+    ranked.sort(key=lambda item: (-int(item["downloadable"]), -item["score"], item["catalog_id"]))
     return ranked
 
 
@@ -102,12 +105,21 @@ def recommend_hparams(
     if summary.image_stats.get("max_wh"):
         max_side = max(int(value) for value in summary.image_stats["max_wh"])
 
-    imgsz = 640
-    if max_side and max_side < 640:
-        imgsz = max(32, (max_side + 31) // 32 * 32)
-    batch_size = 16 if device.is_gpu else 4
+    is_detection = task_type == "object_detection"
+    if is_detection:
+        # RT-DETR encoder downsamples by 8/16/32, so the input must be a fixed
+        # multiple of 32 (never shrink to the image size) [S14b].
+        imgsz = 640
+    else:
+        imgsz = 640
+        if max_side and max_side < 640:
+            imgsz = max(32, (max_side + 31) // 32 * 32)
+    # RT-DETR needs a conservative batch on small GPUs (4 GB) [S14b]; the
+    # exact batch/imgsz ceiling is measured by deploy/gpu_memory_probe.py and
+    # updated here once the table exists (D122).
+    batch_size = 1 if is_detection else (16 if device.is_gpu else 4)
     lr = {
-        "object_detection": 0.01,
+        "object_detection": 0.0001,  # RT-DETR official AdamW lr (was 0.01) [S14b]
         "image_classification": 0.001,
         "segmentation": 0.01,
         "tabular_classification": None,
@@ -117,13 +129,13 @@ def recommend_hparams(
     resolved_preset = preset or ("full" if device.is_gpu else "dev")
     epochs = 50 if bucket != "tiny" else 20
     if resolved_preset == "dev":
-        epochs = 2  # doc 14 §3.4: "1–2 epochs" so a laptop demo takes minutes
+        epochs = 1 if is_detection else 2  # doc 14 §3.4: "1–2 epochs"
     hparams: dict[str, Any] = {
         "preset": resolved_preset,
         "epochs": epochs,
         "batch_size": batch_size,
-        "imgsz": imgsz,
-        "freeze_backbone": bucket == "tiny",
+        "imgsz": 512 if (is_detection and resolved_preset == "dev") else imgsz,
+        "freeze_backbone": is_detection or bucket == "tiny",
         "strategy": finetune_strategy(bucket),
         "dataset_size_bucket": bucket,
         "samples": total,

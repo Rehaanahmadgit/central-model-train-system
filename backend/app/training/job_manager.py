@@ -22,12 +22,14 @@ from typing import Any
 
 from app.checkpoints.resolver import CheckpointError, CheckpointResolver
 from app.core.config import Settings
+from app.core.device import resolve_device
 from app.core.states import can_transition, transition
 from app.realtime.broadcaster import EventBroadcaster
 from app.realtime.events import RunEventLog
 from app.storage.atomic import atomic_write_json, read_json
 from app.storage.audit import append_audit
-from app.storage.locks import FileLock
+from app.storage.locks import FileLock, LockTimeout
+from app.training import registry
 
 HEARTBEAT = "heartbeat"
 
@@ -58,6 +60,7 @@ class _JobHandle:
         self.failure: dict[str, Any] | None = None
         self.best: dict[str, Any] = {}
         self.finalized = False
+        self.gpu_index: int | None = None
         self.stdout_task: asyncio.Task[Any] | None = None
         self.stderr_task: asyncio.Task[Any] | None = None
         self.monitor_task: asyncio.Task[Any] | None = None
@@ -72,9 +75,10 @@ class JobManager:
         self._settings = settings
         self._broadcaster = broadcaster
         self._handles: dict[str, _JobHandle] = {}
-        # CPU concurrency limit [doc 14 §3.2]; GPU slot locks arrive with the
-        # GPU slice. This is the honest degradation for a laptop/CPU image.
+        # CPU concurrency limit [doc 14 §3.2]; GPU runs use per-GPU file locks
+        # instead, so a CPU job never eats a GPU slot and vice versa.
         self._slots = asyncio.Semaphore(max(1, settings.max_cpu_jobs))
+        self._gpu_locks: dict[int, FileLock] = {}
 
     # -- public API ---------------------------------------------------------
 
@@ -86,20 +90,51 @@ class JobManager:
         state = str(record.get("state") or "queued")
         if state != "queued" or not can_transition(state, "preparing"):
             return
-        await self._slots.acquire()
+        family = str(record.get("model_family") or "")
+        raw_config = record.get("config")
+        config: dict[str, Any] = raw_config if isinstance(raw_config, dict) else {}
+        # dev_preset is the CPU-capable path for GPU-only families [doc 14 §3.4]:
+        # a dev_preset run uses the CPU semaphore and never demands a GPU.
+        needs_gpu = bool(registry.METADATA.get(family, {}).get("needs_gpu")) and not bool(
+            config.get("dev_preset")
+        )
+        gpu_index: int | None = None
+        if needs_gpu:
+            # Clear error instead of a silent CPU fallback [doc 14 §3.3].
+            device = resolve_device(self._settings.device)
+            if not device.is_gpu:
+                self._set_state(
+                    run_id,
+                    "failed",
+                    failure={"reason": "GPU_UNAVAILABLE", "details": device.reason},
+                )
+                return
+            gpu_index = device.index if device.index is not None else 0
+            lock = self._gpu_locks.setdefault(
+                gpu_index,
+                FileLock(self._home / "locks" / f"gpu-{gpu_index}.lock", timeout=0.2),
+            )
+            try:
+                await asyncio.to_thread(lock.acquire)
+            except LockTimeout:
+                # One job per GPU; stay queued and retry when a GPU job finishes.
+                return
+        else:
+            await self._slots.acquire()
         try:
             self._set_state(run_id, "preparing", record)
             env = self._capture_env(record)
             self._write_env(run_id, env)
             await self._resolve_checkpoint(run_id, record)
-            process = await self._spawn(run_id)
+            process = await self._spawn(run_id, gpu_index=gpu_index)
         except BaseException:
-            self._slots.release()
+            self._release_slot(gpu_index)
             self._set_state(run_id, "failed", failure={"reason": "UNKNOWN"})
             raise
         handle = _JobHandle(
             process, run_id, self._home, self._broadcaster, self._settings.worker_lost_seconds
         )
+        handle.gpu_index = gpu_index
         self._handles[run_id] = handle
         handle.log.append(
             "log",
@@ -250,7 +285,9 @@ class JobManager:
         if handle is not None:
             handle.log.append("log", {"level": level, "message": message})
 
-    async def _spawn(self, run_id: str) -> asyncio.subprocess.Process:
+    async def _spawn(
+        self, run_id: str, *, gpu_index: int | None = None
+    ) -> asyncio.subprocess.Process:
         command = [
             sys.executable,
             "-m",
@@ -263,6 +300,10 @@ class JobManager:
         env = os.environ.copy()
         env.setdefault("TRAINHUB_HOME", str(self._home))
         env["TRAINHUB_HEARTBEAT_SECONDS"] = str(self._settings.heartbeat_seconds)
+        if gpu_index is not None:
+            # The parent owns GPU slot selection: the worker only ever sees the
+            # assigned GPU [doc 14 §3.2 one job per GPU].
+            env["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
         process = await asyncio.create_subprocess_exec(
             *command,
             stdin=asyncio.subprocess.PIPE,
@@ -404,7 +445,44 @@ class JobManager:
         handle.log.sync()
         handle.log.close()
         self._handles.pop(handle.run_id, None)
-        self._slots.release()
+        self._release_slot(handle.gpu_index)
+        await self._drain_queue()
+
+    def _release_slot(self, gpu_index: int | None) -> None:
+        if gpu_index is not None:
+            lock = self._gpu_locks.get(gpu_index)
+            if lock is not None:
+                lock.release()
+        else:
+            self._slots.release()
+
+    async def _drain_queue(self) -> None:
+        """Start queued GPU runs that can now claim a slot, oldest first.
+
+        CPU runs keep their existing create-time path (start() blocks on the
+        CPU semaphore); this only retries GPU runs left in ``queued`` because a
+        GPU slot was busy [doc 14 §3.2].
+        """
+        runs_dir = self._home / "runs"
+        if not runs_dir.is_dir():
+            return
+        queued: list[tuple[str, str]] = []
+        for path in runs_dir.glob("*/run.json"):
+            try:
+                data = read_json(path)
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("state") == "queued":
+                family = str(data.get("model_family") or "")
+                if registry.METADATA.get(family, {}).get("needs_gpu"):
+                    queued.append((str(data.get("queued_at") or ""), path.parent.name))
+        for _, run_id in sorted(queued):
+            if run_id in self._handles:
+                continue
+            try:
+                await self.start(run_id)
+            except JobNotFoundError:
+                continue
 
     async def _control(self, run_id: str, action: str) -> None:
         handle = self._handles.get(run_id)

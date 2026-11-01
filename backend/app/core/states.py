@@ -24,7 +24,7 @@ INTERRUPTED: Final = "interrupted"
 
 # state -> states the job may move into next [doc 08 §3].
 VALID_TRANSITIONS: Final = {
-    "queued": {"preparing", "interrupted"},
+    "queued": {"preparing", "failed", "interrupted"},
     "preparing": {"running", "failed", "interrupted"},
     "running": {"paused", "evaluating", "completed", "failed", "stopped", "interrupted"},
     "paused": {"running", "stopped", "interrupted"},
@@ -39,7 +39,9 @@ TERMINAL_STATES: Final = frozenset({"completed", "failed", "stopped"})
 
 # Failure reasons [doc 08 §3.8]. A user-requested stop is NOT a failure (D5):
 # it ends in `stopped` with `failure: null`.
-FAILURE_REASONS: Final = frozenset({"OOM", "DATA_ERROR", "NAN_LOSS", "WORKER_LOST", "UNKNOWN"})
+FAILURE_REASONS: Final = frozenset(
+    {"OOM", "DATA_ERROR", "NAN_LOSS", "WORKER_LOST", "GPU_UNAVAILABLE", "UNKNOWN"}
+)
 
 
 def can_transition(state: str, to: str) -> bool:

@@ -66,17 +66,70 @@ def _heartbeat() -> None:
         time.sleep(_heartbeat_seconds)
 
 
-def _sample_system() -> None:
-    """Emit CPU/RAM every N seconds for the live system-stats panel [doc 08 §6].
+def sample_gpu() -> tuple[float | None, float | None]:
+    """Return (gpu_util_percent, gpu_mem_mb) or (None, None).
 
-    Reads /proc directly (no psutil dependency). GPU stays None — the parent
-    fills real GPU values on the GPU image, and the UI shows "No GPU detected".
+    Never raises [doc 14 §3.5]. When torch has no CUDA device (CPU image, or a
+    GPU container without passthrough) it returns (None, None) so the UI keeps
+    showing "No GPU detected" — even if the host has nvidia-smi, because a
+    CPU run is not using that GPU. With CUDA available: memory from
+    torch.cuda.mem_get_info(), util from `nvidia-smi` via a short subprocess.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None, None
+    except Exception:  # pragma: no cover - defensive; sampler must never crash
+        return None, None
+
+    mem_mb: float | None = None
+    util_pct: float | None = None
+    try:
+        total, free = torch.cuda.mem_get_info()
+        mem_mb = round((total - free) / 1024**2, 1)
+    except Exception:  # pragma: no cover - defensive; any failure => null
+        mem_mb = None
+    try:
+        import shutil
+        import subprocess
+
+        executable = shutil.which("nvidia-smi")
+        if executable is not None:
+            output = subprocess.run(  # noqa: S603 - fixed executable, no shell
+                [executable, "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            first_line = output.stdout.strip().splitlines()[0] if output.stdout.strip() else ""
+            if first_line:
+                util_pct = round(float(first_line.strip()), 1)
+    except Exception:  # pragma: no cover - defensive; any failure => null
+        util_pct = None
+    return util_pct, mem_mb
+
+
+def _sample_system() -> None:
+    """Emit CPU/RAM/GPU every N seconds for the live system-stats panel [doc 08 §6].
+
+    Reads /proc directly (no psutil dependency). GPU values come from
+    ``sample_gpu()`` (torch.cuda + nvidia-smi); absent means null, never a crash.
+    The first sample is emitted immediately so even a run that finishes within
+    one heartbeat interval leaves one system event behind.
     """
     import os
 
     proc = Path("/proc")
     clock = os.sysconf("SC_CLK_TCK")
-    previous: tuple[int, int] | None = None
+    # Baseline at worker start, so the very first sample already has a real CPU %.
+    try:
+        stat = (proc / "self" / "stat").read_text().split()
+        baseline_ticks = int(stat[13]) + int(stat[14])
+    except (OSError, IndexError, ValueError):  # pragma: no cover - defensive
+        baseline_ticks = 0
+    baseline_wall = time.monotonic()
     while not _stop_event.is_set():
         try:
             stat = (proc / "self" / "stat").read_text().split()
@@ -88,16 +141,17 @@ def _sample_system() -> None:
                 if line.startswith("VmRSS:"):
                     ram_kb = int(line.split()[1])
                     break
+            elapsed = time.monotonic() - baseline_wall
             cpu: float | None = None
-            if previous is not None:
-                delta = (utime + stime) - previous[0]
-                cpu = round(100 * delta / (clock * _heartbeat_seconds), 1)
-            previous = (utime + stime, previous[1] if previous else 0)
+            if baseline_ticks > 0 and elapsed > 0:
+                delta = (utime + stime) - baseline_ticks
+                cpu = round(min(100 * delta / (clock * elapsed), 100.0), 1)
+            gpu_util, gpu_mem_mb = sample_gpu()
             emit(
                 "system",
                 {
-                    "gpu_util": None,
-                    "gpu_mem_mb": None,
+                    "gpu_util": gpu_util,
+                    "gpu_mem_mb": gpu_mem_mb,
                     "cpu": cpu,
                     "ram_mb": round(ram_kb / 1024, 1),
                 },

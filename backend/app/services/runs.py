@@ -52,6 +52,14 @@ def create_run(
     dataset_hash = str(verification.get("dataset_hash") or "")
     model_family = str(verification.get("model_family") or "")
     task_type = verification.get("task_type")
+    if not task_type:
+        # The wizard does not post task_type; it is detected during verification
+        # and stored in report.json's derived facts [doc 06 §6].
+        report = read_json(home / "verifications" / verification_id / "report.json")
+        if isinstance(report, dict):
+            derived = report.get("derived")
+            if isinstance(derived, dict):
+                task_type = derived.get("task_type")
     plugin = get_plugin(model_family)
     if plugin is None:
         raise ApiError(409, "UNKNOWN_MODEL_FAMILY", f"no trainer for model family {model_family!r}")
@@ -123,7 +131,35 @@ def get_run(home: Path, run_id: str) -> dict[str, Any]:
     data = read_json(path)
     if not isinstance(data, dict):
         raise ApiError(500, "RUN_CORRUPT", f"run {run_id} is unreadable")
+    data["queue_position"] = _queue_position(home, run_id)
     return data
+
+
+def _queue_position(home: Path, run_id: str) -> int | None:
+    """1-based position among queued runs (oldest first); None when not queued."""
+    runs_dir = home / "runs"
+    if not runs_dir.is_dir():
+        return None
+    queued: list[tuple[str, str]] = []
+    is_queued = False
+    for path in runs_dir.glob("*/run.json"):
+        try:
+            data = read_json(path)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("state") != "queued":
+            continue
+        queued.append((str(data.get("queued_at") or ""), path.parent.name))
+        if path.parent.name == run_id:
+            is_queued = True
+    if not is_queued:
+        return None
+    for position, (_, queued_id) in enumerate(sorted(queued), start=1):
+        if queued_id == run_id:
+            return position
+    return None
 
 
 def list_runs(home: Path) -> list[dict[str, Any]]:
@@ -137,6 +173,11 @@ def list_runs(home: Path) -> list[dict[str, Any]]:
         except (OSError, ValueError):
             continue
         if isinstance(data, dict):
+            data["queue_position"] = (
+                _queue_position(home, str(path.parent.name))
+                if data.get("state") == "queued"
+                else None
+            )
             runs.append(data)
     return runs
 

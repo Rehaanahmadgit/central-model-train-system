@@ -90,16 +90,52 @@ METADATA: dict[str, dict[str, Any]] = {
             "min_delta": 0.0,
         },
     },
+    "rtdetr": {
+        "family": "rtdetr",
+        "supported_tasks": ["object_detection"],
+        "supported_formats": ["yolo"],
+        "description": "RT-DETR r18vd object detector. dev_preset runs on CPU; full needs GPU.",
+        "needs_gpu": True,
+        "hparam_schema": {
+            "type": "object",
+            "properties": {
+                "epochs": {"type": "integer", "minimum": 1, "default": 1},
+                "batch_size": {"type": "integer", "minimum": 1, "default": 1},
+                "imgsz": {"type": "integer", "minimum": 128, "maximum": 1536, "default": 512},
+                "lr": {"type": "number", "minimum": 1e-6, "default": 0.0001},
+                "amp": {"type": "boolean", "default": False},
+                "freeze_backbone": {"type": "boolean", "default": True},
+                "clip_max_norm": {"type": "number", "minimum": 0, "default": 0.1},
+                "dev_preset": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Tiny CPU preset (1 epoch); disable for full GPU mode.",
+                },
+            },
+        },
+        "default_hparams": {
+            "epochs": 1,
+            "batch_size": 1,
+            "imgsz": 512,
+            "lr": 0.0001,
+            "amp": False,
+            "freeze_backbone": True,
+            "clip_max_norm": 0.1,
+            "dev_preset": True,
+        },
+    },
 }
 
 _PLUGIN_MODULES = {
     "random_forest": "app.training.plugins.random_forest",
     "cnn": "app.training.plugins.cnn",
+    "rtdetr": "app.training.plugins.rtdetr",
 }
 
 _PLUGIN_CLASS = {
     "random_forest": "RandomForestTrainer",
     "cnn": "CNNTrainer",
+    "rtdetr": "RTDetrTrainer",
 }
 
 _cache: dict[str, TrainerPlugin] = {}

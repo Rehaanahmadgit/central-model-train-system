@@ -77,7 +77,7 @@ def _run(record: dict[str, Any], home: Path, run_id: str) -> int:
         )
         return 1
 
-    device = resolve_device(Settings().device)
+    device = resolve_device("cpu" if config.get("dev_preset") else Settings().device)
     ctx = WorkerRunContext(
         home=home,
         run_id=run_id,

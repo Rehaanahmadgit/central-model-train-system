@@ -256,7 +256,11 @@ class ClassNamesConsistentCheck(Check):
                 message="data.yaml 'names' is not a list",
                 fix_hint="Use a YAML list: names: [cat, dog].",
             )
-        used = sorted(int(label) for label in summary.class_counts)
+        # Class ids live in the manifest rows (class_id column); class_counts keys
+        # are human-readable names after the data.yaml mapping, so never int() them.
+        used = sorted(
+            {int(row["class_id"]) for row in summary.rows if row.get("class_id") is not None}
+        )
         out_of_range = [value for value in used if value < 0 or value >= len(declared)]
         if out_of_range:
             return CheckResult(

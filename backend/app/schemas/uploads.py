@@ -1,5 +1,7 @@
 """Chunked upload schemas [doc 05 §1, D15]."""
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -22,3 +24,7 @@ class UploadStatus(BaseModel):
 class UploadComplete(BaseModel):
     dataset_hash: str
     deduplicated: bool
+    # Same shape as POST /datasets/sample — the wizard reads dataset.name and
+    # dataset.file_count from both paths (bug fix: this field was missing, so
+    # FastAPI's response_model stripped it and the Configure/Train step crashed).
+    dataset: dict[str, Any]

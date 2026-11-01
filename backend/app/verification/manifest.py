@@ -21,6 +21,7 @@ from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
+import yaml
 from PIL import Image
 
 from app.storage.atomic import atomic_write_bytes
@@ -108,7 +109,30 @@ def _yolo_label_path(root: Path, image: Path) -> Path | None:
     return sibling if sibling.is_file() else None
 
 
+def _yolo_class_names(root: Path) -> list[str]:
+    """Read ``data.yaml`` ``names:`` (one per class id); [] when absent/invalid."""
+    for name in ("data.yaml", "data.yml"):
+        candidate = root / name
+        if not candidate.is_file():
+            continue
+        try:
+            parsed = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            return []
+        if isinstance(parsed, dict):
+            field = parsed.get("names")
+            if isinstance(field, list) and all(isinstance(item, str) for item in field):
+                return list(field)
+        return []
+    return []
+
+
 def _yolo_rows(root: Path, images: list[Path]) -> list[dict[str, Any]]:
+    names = _yolo_class_names(root)
+    # Model class-index space = sorted data.yaml names (matches class_names /
+    # class_to_id computed by _summarize). Raw label ids are mapped into that
+    # space so the manifest is the single source of truth for training [S14b].
+    name_to_index = {name: index for index, name in enumerate(sorted(names))}
     rows: list[dict[str, Any]] = []
     for image in images:
         relative = image.relative_to(root).as_posix()
@@ -122,15 +146,22 @@ def _yolo_rows(root: Path, images: list[Path]) -> list[dict[str, Any]]:
                 if len(parts) != 5:
                     continue
                 try:
-                    parsed = [float(value) for value in parts[1:]]
                     parsed_id = int(parts[0])
+                    coords = [float(value) for value in parts[1:]]
                 except ValueError:
                     continue
-                boxes.append(parsed)
+                if 0 <= parsed_id < len(names):
+                    cid = name_to_index[names[parsed_id]]
+                    cname = names[parsed_id]
+                else:
+                    # Invalid id: verification flags it; keep the raw id.
+                    cid = parsed_id
+                    cname = str(parsed_id)
+                # Per-box [class_id, cx, cy, w, h] (normalized) [doc 06 §4; S14b].
+                boxes.append([cid] + coords)
                 if class_id is None:
-                    class_id = parsed_id
-        if class_id is not None:
-            label = str(class_id)
+                    class_id = cid
+                    label = cname
         rows.append(
             {
                 "path": relative,
@@ -163,6 +194,11 @@ def _coco_rows(root: Path, annotation_file: Path) -> list[dict[str, Any]]:
         for entry in data.get("categories", [])
         if isinstance(entry, dict)
     }
+    # Stable class ids: sorted category names (same order as _summarize's
+    # class_to_id), not the arbitrary COCO category ids.
+    name_to_index = {
+        name: index for index, name in enumerate(sorted(set(categories.values())))
+    }
     by_image: dict[Any, list[dict[str, Any]]] = {}
     for annotation in data.get("annotations", []):
         if isinstance(annotation, dict):
@@ -174,20 +210,48 @@ def _coco_rows(root: Path, annotation_file: Path) -> list[dict[str, Any]]:
         file_name = str(image.get("file_name", ""))
         candidate = root / file_name
         relative = candidate.relative_to(root).as_posix() if candidate.is_file() else file_name
+        width = image.get("width")
+        height = image.get("height")
         annotations = by_image.get(image.get("id"), [])
-        boxes = [annotation.get("bbox") for annotation in annotations if annotation.get("bbox")]
-        first = annotations[0].get("category_id") if annotations else None
-        label = categories.get(first) if first is not None else None
+        boxes: list[list[float]] = []
+        class_id: int | None = None
+        label: str | None = None
+        for annotation in annotations:
+            if not isinstance(annotation, dict):
+                continue
+            bbox = annotation.get("bbox")
+            category_id = annotation.get("category_id")
+            name = categories.get(category_id)
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4 or name is None:
+                continue
+            if not (isinstance(width, (int, float)) and isinstance(height, (int, float))):
+                continue
+            if width <= 0 or height <= 0:
+                continue
+            x, y, w, h = (float(value) for value in bbox)
+            # COCO [x, y, w, h] (top-left, pixels) -> YOLO [cx, cy, w, h] normalized.
+            boxes.append(
+                [
+                    name_to_index[name],
+                    (x + w / 2) / width,
+                    (y + h / 2) / height,
+                    w / width,
+                    h / height,
+                ]
+            )
+            if class_id is None:
+                class_id = name_to_index[name]
+                label = name
         rows.append(
             {
                 "path": relative,
                 "split": split_of(relative),
                 "label": label,
-                "class_id": int(first) if isinstance(first, int) else None,
+                "class_id": class_id,
                 "num_boxes": len(boxes),
                 "boxes": json.dumps(boxes) if boxes else None,
-                "width": image.get("width"),
-                "height": image.get("height"),
+                "width": width,
+                "height": height,
                 "color_mode": None,
                 "file_sha256": None,
                 "annotation_path": annotation_file.relative_to(root).as_posix(),
@@ -462,7 +526,11 @@ def _summarize(summary: ManifestSummary) -> None:
             continue
         try:
             for box in json.loads(str(row["boxes"])):
-                if len(box) == 4:
+                # Per-box [class_id, cx, cy, w, h]; legacy 4-value [cx, cy, w, h]
+                # rows are tolerated for stats only [S14b].
+                if len(box) == 5:
+                    box_areas.append(float(box[3]) * float(box[4]))
+                elif len(box) == 4:
                     box_areas.append(float(box[2]) * float(box[3]))
         except (ValueError, TypeError):
             continue
