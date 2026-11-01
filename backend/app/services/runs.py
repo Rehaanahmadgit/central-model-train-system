@@ -22,6 +22,11 @@ from app.training.registry import get_plugin
 RUN_ID_PATTERN = re.compile(r"^run_[0-9]{8}_[0-9]{6}_[0-9a-f]{4}$")
 
 
+def dataset_root(home: Path, dataset_hash: str) -> Path:
+    """Raw dataset directory: the base that prediction image paths are relative to."""
+    return home / "datasets" / dataset_hash / "raw"
+
+
 def _run_path(home: Path, run_id: str) -> Path:
     return home / "runs" / run_id / "run.json"
 

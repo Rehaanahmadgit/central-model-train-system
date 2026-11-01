@@ -22,6 +22,7 @@ import pyarrow.parquet as pq  # type: ignore[import-untyped]
 import torch
 from PIL import Image
 
+from app.storage.atomic import atomic_write_json
 from app.training.base import Issue, RunContext, TrainerPlugin, TrainResult
 
 # Head tensors whose shapes depend on the class count. ``denoising_class_embed``
@@ -219,6 +220,104 @@ def compute_map50(
     return {"mAP50": mean_ap, "per_class_AP": per_class, "num_classes_evaluated": len(aps)}
 
 
+def _clamp01(value: float) -> float:
+    return min(1.0, max(0.0, value))
+
+
+def _image_size(path: Path) -> tuple[int, int]:
+    """Real pixel size of an image (0, 0 when unreadable)."""
+    try:
+        with Image.open(path) as opened:
+            return int(opened.width), int(opened.height)
+    except OSError:
+        return 0, 0
+
+
+def _relative_to_root(path: Path, dataset_root: Path) -> str:
+    """Image path relative to the dataset root, as the API expects it."""
+    try:
+        return path.relative_to(dataset_root).as_posix()
+    except ValueError:
+        return path.name
+
+
+def _cxcywh_to_xyxy(box: list[float] | tuple[float, ...]) -> tuple[float, float, float, float]:
+    """Normalized cxcywh -> xyxy, ignoring any leading class id / score.
+
+    GT rows are ``[class_id, cx, cy, w, h]`` and prediction rows are
+    ``[class_id, score, cx, cy, w, h]``, so the box is always the last four.
+    """
+    cx, cy, w, h = (float(v) for v in box[-4:])
+    return (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+
+
+def match_counts(
+    gt: list[list[float]],
+    pred: list[list[float]],
+    iou_threshold: float = MATCH_IOU,
+) -> dict[str, int]:
+    """Count tp / fp / fn / wrong_class for one image (greedy, IoU 0.5, no deps).
+
+    ``gt``: ``[class_id, cx, cy, w, h]`` normalized; ``pred``:
+    ``[class_id, score, cx, cy, w, h]`` normalized. Predictions are visited by
+    descending score; each one claims the best same-class unmatched GT with
+    IoU >= ``iou_threshold`` (tp). A prediction left over that covers an
+    unmatched GT of *another* class is ``wrong_class`` (a right box with the
+    wrong label), everything else is fp. GT nobody claimed is fn. Every
+    prediction lands in exactly one bucket (tp + fp + wrong_class == #pred) and
+    every GT in exactly one (tp + fn == #gt), so error_score never double-counts.
+    """
+    gt_by_class: dict[int, list[list[float]]] = defaultdict(list)
+    for box in gt:
+        gt_by_class[int(box[0])].append(box)
+    used: dict[int, set[int]] = defaultdict(set)
+
+    tp = 0
+    fp = 0
+    wrong_class = 0
+    leftover: list[list[float]] = []
+    for prediction in sorted(pred, key=lambda item: -float(item[1])):
+        class_id = int(prediction[0])
+        pred_box = _cxcywh_to_xyxy(prediction)
+        best_iou = 0.0
+        best_index = -1
+        for index, candidate in enumerate(gt_by_class.get(class_id, [])):
+            if index in used[class_id]:
+                continue
+            iou = _iou(pred_box, _cxcywh_to_xyxy(candidate))
+            if iou > best_iou:
+                best_iou, best_index = iou, index
+        if best_index >= 0 and best_iou >= iou_threshold:
+            used[class_id].add(best_index)
+            tp += 1
+        else:
+            leftover.append(prediction)
+
+    for prediction in leftover:
+        class_id = int(prediction[0])
+        pred_box = _cxcywh_to_xyxy(prediction)
+        best_iou = 0.0
+        best_class = -1
+        best_index = -1
+        for other_class, candidates in gt_by_class.items():
+            if other_class == class_id:
+                continue
+            for index, candidate in enumerate(candidates):
+                if index in used[other_class]:
+                    continue
+                iou = _iou(pred_box, _cxcywh_to_xyxy(candidate))
+                if iou > best_iou:
+                    best_iou, best_class, best_index = iou, other_class, index
+        if best_class >= 0 and best_iou >= iou_threshold:
+            used[best_class].add(best_index)
+            wrong_class += 1
+        else:
+            fp += 1
+
+    fn = sum(len(boxes) - len(used[class_id]) for class_id, boxes in gt_by_class.items())
+    return {"tp": tp, "fp": fp, "fn": fn, "wrong_class": wrong_class}
+
+
 def _load_image(path: Path, imgsz: int, flip: bool) -> torch.Tensor:
     """RGB, resize to imgsz, [0,1] float, optional horizontal flip (train)."""
     with Image.open(path) as opened:
@@ -239,6 +338,30 @@ def split_warning(sample_count: int) -> str | None:
     if sample_count >= SMALL_VAL_THRESHOLD:
         return None
     return f"only {sample_count} images: mAP50 will swing a lot between epochs and runs"
+
+
+def build_predictions_payload(
+    class_names: list[str],
+    threshold: float,
+    images: list[dict[str, Any]],
+    split_names: list[str],
+) -> dict[str, Any]:
+    """predictions.json payload [B1]: per image boxes + error counts.
+
+    ``images`` entries are already normalized and sorted; ``splits`` records how
+    many images each split contributed so the UI can offer a split filter.
+    """
+    return {
+        "schema_version": 1,
+        "model_family": "rtdetr",
+        "class_names": list(class_names),
+        "threshold": threshold,
+        "match_iou": MATCH_IOU,
+        "splits": {
+            name: sum(1 for image in images if image.get("split") == name) for name in split_names
+        },
+        "images": images,
+    }
 
 
 def build_eval_report(
@@ -282,6 +405,14 @@ class RTDetrTrainer(TrainerPlugin):
             "amp": {"type": "boolean", "default": False},
             "freeze_backbone": {"type": "boolean", "default": True},
             "clip_max_norm": {"type": "number", "minimum": 0, "default": 0.1},
+            "score_threshold": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.25,
+                "description": "Predictions below this confidence are dropped from "
+                "artifacts/predictions.json (mAP itself always uses all queries).",
+            },
             "dev_preset": {
                 "type": "boolean",
                 "default": True,
@@ -297,6 +428,7 @@ class RTDetrTrainer(TrainerPlugin):
         "amp": False,
         "freeze_backbone": True,
         "clip_max_norm": 0.1,
+        "score_threshold": DEFAULT_SCORE_THRESHOLD,
         "dev_preset": True,
     }
 
@@ -313,6 +445,9 @@ class RTDetrTrainer(TrainerPlugin):
             issues.append(Issue("imgsz", "must be between 128 and 1536"))
         if float(config.get("lr", 0.0001)) <= 0:
             issues.append(Issue("lr", "must be positive"))
+        threshold = config.get("score_threshold", DEFAULT_SCORE_THRESHOLD)
+        if not 0.0 <= float(threshold) <= 1.0:
+            issues.append(Issue("score_threshold", "must be between 0 and 1"))
         return issues
 
     def prepare(self, ctx: RunContext) -> None:
@@ -467,6 +602,14 @@ class RTDetrTrainer(TrainerPlugin):
         val = self._eval_split(self._val_samples, names)
         test = self._eval_split(self._test_samples, names) if self._test_samples else None
         result = build_eval_report(names, val, test)
+        try:
+            self._write_predictions(ctx, names)
+        except Exception as exc:  # the metrics are already computed: never lose them
+            ctx.emit_log(
+                "WARNING",
+                f"could not write predictions.json ({type(exc).__name__}: {exc}); "
+                "the Predictions tab will be empty for this run",
+            )
         test_note = (
             f"test/mAP50={test['mAP50']:.4f} on {test['samples']} images"
             if test is not None
@@ -667,6 +810,94 @@ class RTDetrTrainer(TrainerPlugin):
         if len(samples) < SMALL_VAL_THRESHOLD:
             metrics["warning"] = split_warning(len(samples))
         return metrics
+
+    def _write_predictions(self, ctx: RunContext, names: list[str]) -> None:
+        """Per-image GT/prediction boxes for the UI gallery -> artifacts/predictions.json.
+
+        Runs on the best weights (``evaluate`` already reloaded them). Boxes are
+        normalized to the image, so the UI can draw them over the original pixels:
+        the network sees the whole image stretched to ``imgsz`` (no padding), so
+        its pixel boxes divided by ``imgsz`` are the same normalized space as the
+        manifest GT. No flip happens here — ``_collate`` only flips in train mode.
+        """
+        threshold = float(ctx.config.get("score_threshold", DEFAULT_SCORE_THRESHOLD))
+        splits: list[tuple[str, list[tuple[Path, list[list[float]]]]]] = [
+            ("val", self._val_samples)
+        ]
+        if self._test_samples:
+            splits.append(("test", self._test_samples))
+        images: list[dict[str, Any]] = []
+        for split_name, samples in splits:
+            images.extend(self._predict_split(ctx, split_name, samples, threshold))
+        payload = build_predictions_payload(
+            names, threshold, images, [name for name, _ in splits]
+        )
+        ctx.output_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(ctx.output_dir / "predictions.json", payload)
+        total_errors = sum(int(image["error_score"]) for image in images)
+        ctx.emit_log(
+            "INFO",
+            f"predictions.json: {len(images)} images (score >= {threshold}), "
+            f"{total_errors} errors to inspect",
+        )
+
+    def _predict_split(
+        self,
+        ctx: RunContext,
+        split_name: str,
+        samples: list[tuple[Path, list[list[float]]]],
+        threshold: float,
+    ) -> list[dict[str, Any]]:
+        self._model.eval()
+        records: list[dict[str, Any]] = []
+        enabled = self._amp and self._device.type == "cuda"
+        with torch.no_grad():
+            for batch in _batches(samples, self._batch_size):
+                images, _targets = self._collate(batch)
+                with torch.autocast("cuda", dtype=torch.float16, enabled=enabled):
+                    outputs = self._model(images)
+                sizes = torch.full(
+                    (len(batch), 2), self._imgsz, dtype=torch.float32, device=self._device
+                )
+                results = self._postprocessor(outputs, sizes)
+                for (path, boxes), result in zip(batch, results, strict=False):
+                    gt = [[float(box[0]), *[float(v) for v in box[1:5]]] for box in boxes]
+                    predictions: list[list[float]] = []
+                    for label, score, raw in zip(
+                        result["labels"].tolist(),
+                        result["scores"].tolist(),
+                        result["boxes"].tolist(),
+                        strict=False,
+                    ):
+                        if float(score) < threshold:
+                            continue
+                        x1, y1, x2, y2 = (float(v) / self._imgsz for v in raw)
+                        predictions.append(
+                            [
+                                float(int(label)),
+                                round(float(score), 4),
+                                round(_clamp01((x1 + x2) / 2), 4),
+                                round(_clamp01((y1 + y2) / 2), 4),
+                                round(_clamp01(x2 - x1), 4),
+                                round(_clamp01(y2 - y1), 4),
+                            ]
+                        )
+                    counts = match_counts(gt, predictions)
+                    width, height = _image_size(path)
+                    records.append(
+                        {
+                            "split": split_name,
+                            "path": _relative_to_root(path, ctx.dataset_root),
+                            "width": width,
+                            "height": height,
+                            "gt": [[int(box[0]), *box[1:5]] for box in gt],
+                            "pred": predictions,
+                            "counts": counts,
+                            "error_score": counts["fp"] + counts["fn"] + counts["wrong_class"],
+                        }
+                    )
+        records.sort(key=lambda item: (-int(item["error_score"]), str(item["path"])))
+        return records
 
     def _load_best_weights(self, ctx: RunContext) -> None:
         """Evaluate the checkpoint that was actually kept, not the last epoch."""

@@ -6,14 +6,23 @@ best-checkpoint reload are exercised directly.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 import torch
+from fastapi.testclient import TestClient
 from fixtures.make_datasets import build_yolo, materialize, png_bytes
 
-from app.training.plugins.rtdetr import RTDetrTrainer, build_eval_report, split_warning
+from app.training.plugins.rtdetr import (
+    RTDetrTrainer,
+    build_eval_report,
+    build_predictions_payload,
+    match_counts,
+    split_warning,
+)
 from app.verification.manifest import build_manifest, write_manifest
 
 
@@ -194,3 +203,270 @@ def test_yolo_fixture_split_still_trains_only_on_train_rows(tmp_path: Path) -> N
     assert test == []
     assert train and val
     assert all("/val/" not in path.as_posix() for path, _ in train)
+
+
+# --- B: matching counts (hand-computed known answer) ------------------------
+
+# GT (normalized cxcywh, two classes):
+#   A = class 0 at (0.25, 0.25), 0.2 x 0.2  -> xyxy 0.15,0.15,0.35,0.35
+#   B = class 1 at (0.75, 0.75), 0.2 x 0.2  -> xyxy 0.65,0.65,0.85,0.85
+#   C = class 1 at (0.25, 0.75), 0.2 x 0.2  -> xyxy 0.15,0.65,0.35,0.85
+KNOWN_GT = [
+    [0, 0.25, 0.25, 0.2, 0.2],
+    [1, 0.75, 0.75, 0.2, 0.2],
+    [1, 0.25, 0.75, 0.2, 0.2],
+]
+
+
+def test_match_counts_known_answer() -> None:
+    # 1) exact class-0 box -> tp
+    # 2) class 1's box predicted as class 0 -> wrong_class
+    # 3) a box on empty background predicted as class 1 -> fp
+    # C is never predicted -> fn
+    pred = [
+        [0, 0.9, 0.25, 0.25, 0.2, 0.2],
+        [0, 0.6, 0.75, 0.75, 0.2, 0.2],
+        [1, 0.5, 0.05, 0.05, 0.1, 0.1],
+    ]
+
+    counts = match_counts(KNOWN_GT, pred)
+
+    assert counts == {"tp": 1, "fp": 1, "fn": 1, "wrong_class": 1}
+    assert counts["fp"] + counts["fn"] + counts["wrong_class"] == 3  # error_score
+
+
+def test_match_counts_perfect_predictions_have_no_errors() -> None:
+    pred = [
+        [0, 0.9, 0.25, 0.25, 0.2, 0.2],
+        [1, 0.8, 0.75, 0.75, 0.2, 0.2],
+        [1, 0.7, 0.25, 0.75, 0.2, 0.2],
+    ]
+
+    counts = match_counts(KNOWN_GT, pred)
+
+    assert counts == {"tp": 3, "fp": 0, "fn": 0, "wrong_class": 0}
+
+
+def test_match_counts_iou_threshold_is_half() -> None:
+    # Shifted by 0.05 in x: intersection 0.15 x 0.2 = 0.03, union 0.05 -> IoU 0.6.
+    just_above = match_counts(KNOWN_GT[:1], [[0, 0.9, 0.30, 0.25, 0.2, 0.2]])
+    # Shifted by 0.08 in x: intersection 0.12 x 0.2 = 0.024, union 0.056 -> IoU 0.43.
+    just_below = match_counts(KNOWN_GT[:1], [[0, 0.9, 0.33, 0.25, 0.2, 0.2]])
+
+    assert just_above["tp"] == 1 and just_above["fp"] == 0
+    assert just_below["tp"] == 0 and just_below["fp"] == 1 and just_below["fn"] == 1
+
+
+def test_match_counts_empty_predictions_report_misses() -> None:
+    assert match_counts(KNOWN_GT, []) == {"tp": 0, "fp": 0, "fn": 3, "wrong_class": 0}
+    assert match_counts([], [[0, 0.9, 0.1, 0.1, 0.1, 0.1]]) == {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "wrong_class": 0,
+    }
+
+
+def test_predictions_payload_shape() -> None:
+    image = {
+        "split": "val",
+        "path": "val/images/img0.png",
+        "width": 640,
+        "height": 480,
+        "gt": [[0, 0.5, 0.5, 0.2, 0.2]],
+        "pred": [[0, 0.87, 0.5, 0.5, 0.2, 0.2]],
+        "counts": {"tp": 1, "fp": 0, "fn": 0, "wrong_class": 0},
+        "error_score": 0,
+    }
+
+    payload = build_predictions_payload(["cat", "dog"], 0.25, [image], ["val", "test"])
+
+    assert payload["class_names"] == ["cat", "dog"]
+    assert payload["threshold"] == 0.25
+    assert payload["match_iou"] == 0.5
+    assert payload["splits"] == {"val": 1, "test": 0}
+    entry = payload["images"][0]
+    assert set(entry) == {"split", "path", "width", "height", "gt", "pred", "counts", "error_score"}
+    assert len(entry["pred"][0]) == 6  # class_id, score, cx, cy, w, h
+    assert len(entry["gt"][0]) == 5  # class_id, cx, cy, w, h
+
+
+# --- B2: safe image serving -------------------------------------------------
+
+RUN_ID = "run_20261101_120000_abcd"
+DATASET_HASH = "a" * 64
+IMAGES_PATH = "val/images/img0.png"
+
+
+def _served_run(home: Path, *, listed: str = IMAGES_PATH) -> Path:
+    """A finished run with predictions.json + one real dataset image."""
+    run_dir = home / "runs" / RUN_ID
+    (run_dir / "artifacts").mkdir(parents=True)
+    (run_dir / "run.json").write_text(
+        json.dumps({"id": RUN_ID, "state": "completed", "dataset_hash": DATASET_HASH})
+    )
+    raw = home / "datasets" / DATASET_HASH / "raw"
+    image = raw / IMAGES_PATH
+    image.parent.mkdir(parents=True)
+    image.write_bytes(png_bytes((1, 2, 3)))
+    (raw / "unlisted.png").write_bytes(png_bytes((9, 9, 9)))
+    (run_dir / "artifacts" / "predictions.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "class_names": ["cat"],
+                "threshold": 0.25,
+                "images": [
+                    {
+                        "split": "val",
+                        "path": listed,
+                        "width": 16,
+                        "height": 16,
+                        "gt": [[0, 0.5, 0.5, 0.2, 0.2]],
+                        "pred": [[0, 0.8, 0.5, 0.5, 0.2, 0.2]],
+                        "counts": {"tp": 1, "fp": 0, "fn": 0, "wrong_class": 0},
+                        "error_score": 0,
+                    }
+                ],
+            }
+        )
+    )
+    return raw
+
+
+def test_predictions_endpoint_serves_the_file(client: TestClient, home: Path) -> None:
+    _served_run(home)
+
+    body = client.get(f"/api/v1/runs/{RUN_ID}/predictions").json()
+
+    assert body["class_names"] == ["cat"]
+    assert body["images"][0]["path"] == IMAGES_PATH
+    assert body["images"][0]["counts"]["tp"] == 1
+
+
+def test_predictions_endpoint_404_without_file(client: TestClient, home: Path) -> None:
+    run_dir = home / "runs" / RUN_ID
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text(json.dumps({"id": RUN_ID, "state": "completed"}))
+
+    response = client.get(f"/api/v1/runs/{RUN_ID}/predictions")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PREDICTIONS_NOT_FOUND"
+
+
+def test_images_endpoint_serves_a_listed_image(client: TestClient, home: Path) -> None:
+    _served_run(home)
+
+    response = client.get(f"/api/v1/runs/{RUN_ID}/images", params={"path": IMAGES_PATH})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_images_endpoint_blocks_traversal(client: TestClient, home: Path) -> None:
+    _served_run(home)
+
+    for attempt in (
+        "../../../../etc/passwd",
+        "val/../../../../etc/passwd",
+        "/etc/passwd",
+        "val/images/../../../../etc/hostname",
+    ):
+        response = client.get(f"/api/v1/runs/{RUN_ID}/images", params={"path": attempt})
+        assert response.status_code == 400, (attempt, response.status_code)
+        assert response.json()["error"]["code"] == "INVALID_IMAGE_PATH"
+
+
+def test_images_endpoint_refuses_unlisted_files(client: TestClient, home: Path) -> None:
+    _served_run(home)
+
+    response = client.get(
+        f"/api/v1/runs/{RUN_ID}/images", params={"path": "unlisted.png"}
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "IMAGE_NOT_FOUND"
+
+
+def test_images_endpoint_404_when_listed_file_is_gone(client: TestClient, home: Path) -> None:
+    raw = _served_run(home, listed="val/images/missing.png")
+    assert not (raw / "val/images/missing.png").exists()
+
+    response = client.get(
+        f"/api/v1/runs/{RUN_ID}/images", params={"path": "val/images/missing.png"}
+    )
+
+    assert response.status_code == 404
+
+
+def test_images_endpoint_requires_a_path(client: TestClient, home: Path) -> None:
+    _served_run(home)
+
+    response = client.get(f"/api/v1/runs/{RUN_ID}/images")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_IMAGE_PATH"
+
+
+def test_prediction_images_are_token_aware(tmp_path: Path) -> None:
+    from app.core.config import Settings
+    from app.main import create_app
+
+    settings = Settings(home=tmp_path / "home", access_token="shared-secret", log_level="DEBUG")
+    with TestClient(create_app(settings)) as token_client:
+        _served_run(settings.home)
+        url = f"/api/v1/runs/{RUN_ID}/images"
+        assert token_client.get(url, params={"path": IMAGES_PATH}).status_code == 401
+        assert token_client.get(f"/api/v1/runs/{RUN_ID}/predictions").status_code == 401
+        authorized = {"X-Access-Token": "shared-secret"}
+        served = token_client.get(url, params={"path": IMAGES_PATH}, headers=authorized)
+        assert served.status_code == 200
+
+
+# --- B: slow end-to-end (CPU dev preset) -----------------------------------
+
+@pytest.mark.slow
+def test_dev_preset_run_writes_predictions(tmp_path: Path) -> None:
+    """A real (tiny, CPU) train+evaluate pass produces predictions.json [B1]."""
+    raw = materialize(tmp_path / "raw", _split_dataset(with_test=True))
+    ctx, trainer, logs = _ctx(tmp_path, raw)
+    ctx.config = {
+        "epochs": 1,
+        "batch_size": 2,
+        "imgsz": 128,
+        "lr": 1e-4,
+        "freeze_backbone": True,
+        "amp": False,
+        "dev_preset": True,
+        "score_threshold": 0.25,
+    }
+    ctx.facts = {"classes": ["cat", "dog"]}
+    ctx.output_dir = tmp_path / "runs" / "run_x" / "artifacts"
+    ctx.emit_metric = lambda *args, **kwargs: None
+
+    trainer.prepare(ctx)
+    trainer.train(ctx)
+    evaluation = trainer.evaluate(ctx)
+
+    predictions_path = ctx.output_dir / "predictions.json"
+    assert predictions_path.is_file()
+    payload = json.loads(predictions_path.read_text())
+    assert payload["threshold"] == 0.25
+    assert payload["class_names"] == ["cat", "dog"]
+    # Both splits are represented: val (4 images) and test (3 images).
+    assert payload["splits"] == {"val": 4, "test": 3}
+    assert {image["split"] for image in payload["images"]} == {"val", "test"}
+    for image in payload["images"]:
+        assert image["path"].startswith(("val/", "test/"))
+        assert len(image["gt"][0]) == 5
+        assert image["counts"]["tp"] + image["counts"]["fn"] == len(image["gt"])
+        assert image["error_score"] == (
+            image["counts"]["fp"] + image["counts"]["fn"] + image["counts"]["wrong_class"]
+        )
+    # Same numbers reach the evaluation report for both splits.
+    assert evaluation["val"]["samples"] == 4
+    assert evaluation["test"]["samples"] == 3
+    assert evaluation["test_reason"] is None
+    assert any("predictions.json" in line for line in logs)

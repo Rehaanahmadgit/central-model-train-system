@@ -124,3 +124,11 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - Metric chart: loss on the primary axis, mAP/accuracy on a fixed 0-1 right axis, lr on its own axis (D118). Bug reproduced first (mAP used ~7% of the plot height).
 - Tests: `backend/tests/test_rtdetr.py` (split held out, deterministic fallback, report shape, `test: null`, small-split warning, best-checkpoint reload), `frontend/e2e/chart-axes.spec.ts` + terminal-state cases in `runstream-logic.spec.ts`.
 - `make verify` green.
+
+## Slice B — predictions on images (2026-11-01)
+- RT-DETR writes `artifacts/predictions.json` from the best weights: normalized GT + predictions (score >= `score_threshold`, default 0.25), tp/fp/fn/wrong_class per image, `error_score`, class names, per-split counts (D120, D121).
+- New endpoints: `GET /api/v1/runs/{id}/predictions` and `GET /api/v1/runs/{id}/images?path=…` — listed-path + dataset-root confinement (`resolve()` + `is_relative_to`), token-aware like every `/api` route (D122).
+- Live Run "Predictions" tab: 12 worst images, GT green / prediction red dashed overlay with labels and scores, split + class + confidence filters (client side) (D123).
+- Risk checks: class ids stay in the sorted class-name space; normalized vs pixel boxes; horizontal flip only in train mode; overlay scaled by the real image size. Browser check caught a real NaN bug (GT rows vs prediction rows) — fixed and unit-tested.
+- Tests: `match_counts` known answer (hand-computed counts), IoU 0.5 boundary, payload shape, image-endpoint traversal/unlisted/missing/token cases, `e2e/predictions-logic.spec.ts`, and a slow CPU `dev_preset` run asserting `predictions.json` (val + test).
+- `make verify` green. Not run: GPU/full-mode training, real container e2e.

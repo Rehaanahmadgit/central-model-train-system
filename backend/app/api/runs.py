@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -133,6 +134,59 @@ def get_evaluation(run_id: str, request: Request) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ApiError(500, "EVALUATION_CORRUPT", "evaluation report is unreadable")
     return data
+
+
+def _predictions_path(run_dir: Path) -> Path:
+    return run_dir / "artifacts" / "predictions.json"
+
+
+@router.get("/{run_id}/predictions")
+def get_predictions(run_id: str, request: Request) -> dict[str, Any]:
+    """Per-image GT/prediction boxes for the Predictions tab (artifacts/predictions.json)."""
+    path = _predictions_path(_home(request) / "runs" / _check_run_id(run_id))
+    if not path.is_file():
+        raise ApiError(404, "PREDICTIONS_NOT_FOUND", "this run has no predictions yet")
+    from app.storage.atomic import read_json
+
+    data = read_json(path)
+    if not isinstance(data, dict):
+        raise ApiError(500, "PREDICTIONS_CORRUPT", "predictions file is unreadable")
+    return data
+
+
+@router.get("/{run_id}/images")
+def get_prediction_image(run_id: str, request: Request, path: str = "") -> FileResponse:
+    """Serve one dataset image, but only if predictions.json lists it.
+
+    Paths are relative to the dataset root and must both resolve inside it and
+    appear in predictions.json, so a crafted ``path`` can never read arbitrary
+    files [doc 10 §5]. Token checks happen in the global middleware like every
+    other ``/api`` route.
+    """
+    checked = _check_run_id(run_id)
+    run_dir = _home(request) / "runs" / checked
+    if not (run_dir / "run.json").is_file():
+        raise ApiError(404, "RUN_NOT_FOUND", f"run {run_id} does not exist")
+    if not path or "\x00" in path:
+        raise ApiError(400, "INVALID_IMAGE_PATH", "a dataset-relative image path is required")
+    predictions = get_predictions(checked, request)
+    listed = {
+        str(image.get("path"))
+        for image in predictions.get("images") or []
+        if isinstance(image, dict)
+    }
+    record = runs_service.get_run(_home(request), checked)
+    root = runs_service.dataset_root(_home(request), str(record.get("dataset_hash") or ""))
+    root = root.resolve()
+    resolved = (root / path).resolve()
+    if not resolved.is_relative_to(root):
+        raise ApiError(400, "INVALID_IMAGE_PATH", "image path escapes the dataset directory")
+    if path not in listed:
+        raise ApiError(404, "IMAGE_NOT_FOUND", "image is not part of this run's predictions")
+    if not resolved.is_file():
+        raise ApiError(404, "IMAGE_NOT_FOUND", "image file is missing")
+    media_type = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
+    return FileResponse(resolved, media_type=media_type)
 
 
 def _list_artifacts(run_dir: Path) -> list[dict[str, Any]]:

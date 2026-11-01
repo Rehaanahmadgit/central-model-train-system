@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { apiFetch, getAccessToken } from "../lib/api";
 import { ConnectionIndicator } from "../components/ConnectionIndicator";
 import { MetricChart } from "../components/MetricChart";
+import { PredictionGallery } from "../components/PredictionGallery";
 import { useRunStream } from "../hooks/useRunStream";
 import { isTerminalRunState } from "../lib/runStreamLogic";
 
@@ -46,6 +47,14 @@ const FAILURE_HINTS: Record<string, string> = {
   UNKNOWN: "An unexpected error occurred. See the run log for the traceback.",
 };
 
+type RunTab = "live" | "evaluation" | "predictions";
+
+const TABS: { id: RunTab; label: string }[] = [
+  { id: "live", label: "Live" },
+  { id: "evaluation", label: "Evaluation" },
+  { id: "predictions", label: "Predictions" },
+];
+
 const STATE_COLORS: Record<string, string> = {
   queued: "bg-text-secondary",
   preparing: "bg-warning",
@@ -87,7 +96,7 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
   const [now, setNow] = useState(Date.now());
   const [logQuery, setLogQuery] = useState("");
   const [logLevel, setLogLevel] = useState("all");
-  const [tab, setTab] = useState<"live" | "evaluation">("live");
+  const [tab, setTab] = useState<RunTab>("live");
 
   // Run info (run.json): params, checkpoint, seed, env, timestamps. Refetched
   // on every state transition so Started/Finished/Task/best stay current once
@@ -375,20 +384,22 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
       )}
 
       <div role="tablist" aria-label="Run views" className="flex gap-1 border-b border-border">
-        {(["live", "evaluation"] as const).map((name) => (
+        {TABS.map((item) => (
           <button
-            key={name}
+            key={item.id}
             role="tab"
-            aria-selected={tab === name}
-            onClick={() => setTab(name)}
-            className={`px-4 py-2 text-sm ${tab === name ? "border-b-2 border-accent font-semibold text-text" : "text-text-secondary hover:text-text"}`}
+            aria-selected={tab === item.id}
+            onClick={() => setTab(item.id)}
+            className={`px-4 py-2 text-sm ${tab === item.id ? "border-b-2 border-accent font-semibold text-text" : "text-text-secondary hover:text-text"}`}
           >
-            {name === "live" ? "Live" : "Evaluation"}
+            {item.label}
           </button>
         ))}
       </div>
 
       {tab === "evaluation" && <EvaluationPanel runId={runId} />}
+
+      {tab === "predictions" && <PredictionGallery runId={runId} />}
 
       {tab === "live" && (
         <>
