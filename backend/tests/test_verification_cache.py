@@ -21,6 +21,7 @@ from helpers import upload_dataset
 
 from app.checkpoints.catalog import CatalogEntry, load_catalog
 from app.core.device import DeviceInfo, resolve_device
+from app.verification import VERIFIER_VERSION
 from app.verification.cache import cache_key, read_pointer
 from app.verification.manifest import build_manifest
 from app.verification.recommend import rank_checkpoints, recommend_hparams, size_bucket
@@ -74,7 +75,7 @@ def test_manifest_parquet_has_stable_schema(tmp_path: Path) -> None:
     raw = materialize(tmp_path / "raw", build_yolo())
     summary = build_manifest(raw, "yolo", sample_cap=500)
     assert len(summary.rows) == 24
-    assert summary.class_names == ["0", "1"]
+    assert summary.class_names == ["cat", "dog"]
     assert summary.image_stats["max_wh"] == [16, 16]
     assert summary.object_stats["boxes"] == 24
 
@@ -103,7 +104,8 @@ def test_manifest_detects_splits_and_boxes(tmp_path: Path) -> None:
     summary = build_manifest(raw, "yolo", sample_cap=500)
     assert set(summary.num_samples) == {"train", "val"}
     first_with_boxes = next(row for row in summary.rows if row["num_boxes"])
-    assert json.loads(first_with_boxes["boxes"])[0] == [0.25, 0.25, 0.5, 0.5]
+    # Per-box [class_id, cx, cy, w, h] (normalized) [doc 06 §4; S14b].
+    assert json.loads(first_with_boxes["boxes"])[0] == [0, 0.25, 0.25, 0.5, 0.5]
 
 
 def test_manifest_tabular_schema(tmp_path: Path) -> None:
@@ -149,14 +151,16 @@ def test_size_buckets() -> None:
     assert size_bucket(500_000) == "large"
 
 
-def test_recommend_hparams_shrinks_imgsz_for_small_images(tmp_path: Path) -> None:
+def test_recommend_hparams_keeps_fixed_imgsz_for_detection(tmp_path: Path) -> None:
     raw = materialize(tmp_path / "raw", build_yolo())
     summary = build_manifest(raw, "yolo", sample_cap=100)
     hparams = recommend_hparams(
         summary, task_type="object_detection", model_family="rtdetr", device=CPU
     )
-    assert hparams["imgsz"] == 32  # rounded up from 16 px, multiple of 32
-    assert hparams["freeze_backbone"] is True  # tiny dataset
+    # RT-DETR input stays a fixed multiple of 32; never shrunk to the 16 px
+    # image size (encoder downsamples by 8/16/32) [S14b].
+    assert hparams["imgsz"] == 512  # dev preset on CPU
+    assert hparams["freeze_backbone"] is True  # detection always freezes
     assert hparams["device"] == "cpu"
     assert hparams["strategy"].startswith("freeze backbone")
 
@@ -321,7 +325,7 @@ def test_second_request_hits_cache_and_skips_recompute(client, home: Path) -> No
     first_id = first.json()["id"]
     _wait(client, first_id)
 
-    pointer = read_pointer(home, cache_key(completed["dataset_hash"], "rtdetr", "1.0.0"))
+    pointer = read_pointer(home, cache_key(completed["dataset_hash"], "rtdetr", VERIFIER_VERSION))
     assert pointer is not None
     assert pointer["verification_id"] == first_id
 
@@ -371,7 +375,7 @@ def test_dev_preset_removes_false_gpu_warning(client) -> None:
     check = next(item for item in finished["checks"] if item["name"] == "resource_estimate")
     assert check["status"] == "pass"
     assert finished["derived"]["preset"] == "dev"
-    assert finished["derived"]["recommended_hparams"]["epochs"] == 2
+    assert finished["derived"]["recommended_hparams"]["epochs"] == 1  # detection dev = 1 epoch
 
 
 def test_full_preset_warns_without_gpu(client) -> None:
