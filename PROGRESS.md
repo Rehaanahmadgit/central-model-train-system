@@ -140,3 +140,10 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - Config types: schema-driven numeric inputs, `coerceConfig` before POST, and `normalize_config` in `create_run` (rejects with `INVALID_CONFIG` 400); RT-DETR `validate_config` no longer crashes on non-numeric values (D127).
 - "Edit & run" Train step was empty (no dataset object) — fixed, the run can be started from that path (D128).
 - Tests: `backend/tests/test_training.py` (normalize_config coercion/rejection, run.json types via API, 400 on bad config), `frontend/e2e/run-summary-logic.spec.ts` (best fallback, GPU labels, config coercion/parsing). Repro + fix verified in the browser.
+
+## S1 part 1 — seeding + golden test (2026-11-01)
+- Reproduced non-reproducibility: same config twice → loss `36.829063/35.367523` vs `36.801177/35.672617` (no seeding; flip used the global RNG).
+- Seeding added in `prepare()` (`random`, `numpy`, `torch`, CUDA guarded) and `_collate` now flips with a seeded `random.Random(ctx.seed)`. Two runs after the change: `30.025933/28.736796` both times (D129).
+- Golden test `backend/tests/test_rtdetr_golden.py` + `backend/tests/golden/rtdetr_dev_preset.json` (D130). Ran twice: 2 passed each time; a deliberately wrong golden file fails with a diff table (`epoch 1 train/loss ... (rel 0.001)`, `evaluation.val.mAP50 ... (abs 0.02)`).
+- Determinism test (`test_same_seed_is_deterministic`) compares two runs field by field — exact match.
+- Honest limitation recorded: mAP50 is 0.0 at 2 epochs on this fixture, so the golden pins loss/splits/counts/best-epoch (D131). No refactor started, no new dependency.

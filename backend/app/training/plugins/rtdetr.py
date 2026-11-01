@@ -341,6 +341,21 @@ def match_counts(
     return {"tp": tp, "fp": fp, "fn": fn, "wrong_class": wrong_class}
 
 
+def seed_everything(seed: int) -> None:
+    """Make a run reproducible: python ``random``, numpy and torch.
+
+    Weight init, dropout and the flip augmentation all draw from these RNGs.
+    Without this, two runs with the same config and seed produced different
+    losses (reproduced 2026-11-01: 36.829063 vs 36.801177 at epoch 1).
+    GPU kernels are not bit-exact: determinism is asserted on CPU only.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():  # pragma: no cover - no CUDA in test env
+        torch.cuda.manual_seed_all(seed)
+
+
 def _load_image(path: Path, imgsz: int, flip: bool) -> torch.Tensor:
     """RGB, resize to imgsz, [0,1] float, optional horizontal flip (train)."""
     with Image.open(path) as opened:
@@ -455,6 +470,11 @@ class RTDetrTrainer(TrainerPlugin):
         "dev_preset": True,
     }
 
+    def __init__(self) -> None:
+        # Seeded in prepare(); a fixed default keeps direct helper use (tests,
+        # predictions) deterministic too.
+        self._rng = random.Random(0)
+
     # -- plugin interface ---------------------------------------------------
 
     def validate_config(self, config: dict[str, Any], facts: dict[str, Any]) -> list[Issue]:
@@ -504,6 +524,10 @@ class RTDetrTrainer(TrainerPlugin):
         self._clip = float(ctx.config.get("clip_max_norm", 0.1))
         self._amp = bool(ctx.config.get("amp", False))
         self._device = torch.device("cuda" if ctx.device.is_gpu else "cpu")
+        # Reproducibility: same seed + same config -> same numbers [S1].
+        self._seed = int(getattr(ctx, "seed", 42) or 42)
+        seed_everything(self._seed)
+        self._rng = random.Random(self._seed)
 
         self._train_samples, self._val_samples, self._test_samples = self._load_samples(ctx)
         if not self._train_samples:
@@ -747,7 +771,7 @@ class RTDetrTrainer(TrainerPlugin):
         images: list[torch.Tensor] = []
         targets: list[dict[str, torch.Tensor]] = []
         for _path, boxes in batch:
-            flip = self._model.training and random.random() < 0.5
+            flip = self._model.training and self._rng.random() < 0.5
             image = _load_image(_path, self._imgsz, flip)
             images.append(image)
             labels: list[int] = []

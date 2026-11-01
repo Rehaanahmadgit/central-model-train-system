@@ -1,0 +1,80 @@
+{
+ "best": {
+  "epoch": 1,
+  "metric": "val/mAP50",
+  "value": 0.0
+ },
+ "config": {
+  "amp": false,
+  "batch_size": 2,
+  "dev_preset": true,
+  "epochs": 2,
+  "freeze_backbone": true,
+  "imgsz": 128,
+  "lr": 0.0001,
+  "score_threshold": 0.25
+ },
+ "epochs": [
+  {
+   "epoch": 1,
+   "train_loss": 30.025932788848877,
+   "val_map50": 0.0
+  },
+  {
+   "epoch": 2,
+   "train_loss": 28.736795902252197,
+   "val_map50": 0.0
+  }
+ ],
+ "evaluation": {
+  "test": {
+   "mAP50": 0.0,
+   "per_class_AP": {
+    "cat": 0.0,
+    "dog": 0.0
+   },
+   "samples": 3,
+   "warning": "only 3 images: mAP50 will swing a lot between epochs and runs"
+  },
+  "val": {
+   "mAP50": 0.0,
+   "per_class_AP": {
+    "cat": 0.0,
+    "dog": 0.0
+   },
+   "samples": 4,
+   "warning": "only 4 images: mAP50 will swing a lot between epochs and runs"
+  }
+ },
+ "predictions": {
+  "splits": {
+   "test": 3,
+   "val": 4
+  },
+  "sum_error_score": 7
+ },
+ "seed": 42,
+ "splits": {
+  "test": [
+   "test/images/img12.png",
+   "test/images/img13.png",
+   "test/images/img14.png"
+  ],
+  "train": [
+   "train/images/img0.png",
+   "train/images/img1.png",
+   "train/images/img2.png",
+   "train/images/img3.png",
+   "train/images/img4.png",
+   "train/images/img5.png",
+   "train/images/img6.png",
+   "train/images/img7.png"
+  ],
+  "val": [
+   "val/images/img10.png",
+   "val/images/img11.png",
+   "val/images/img8.png",
+   "val/images/img9.png"
+  ]
+ }
+}
