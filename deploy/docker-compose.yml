@@ -34,8 +34,7 @@ services:
     build:
       context: ..
       target: gpu
-      args:
-        GIT_COMMIT: "${GIT_COMMIT:-unknown}"
+      # No build-args: the GPU image bakes torch (CUDA) into the Dockerfile [doc 14 §4].
     image: trainhub:0.1.0-gpu
     restart: unless-stopped
     env_file:
