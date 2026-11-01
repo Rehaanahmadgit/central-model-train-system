@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { wsUrl } from "../lib/api";
+import { isDuplicateReplay } from "../lib/runStreamLogic";
 
 export type StreamStatus = "connecting" | "live" | "reconnecting" | "closed";
 
@@ -84,7 +85,8 @@ export function useRunStream(runId: string | null): StreamState {
     lastSeq: number;
     status: StreamStatus;
     system: SystemStat | null;
-  }>({ metrics: [], logs: [], events: [], runState: null, lastSeq: 0, status: "connecting", system: null });
+    snapshotSeen: number | null;
+  }>({ metrics: [], logs: [], events: [], runState: null, lastSeq: 0, status: "connecting", system: null, snapshotSeen: null });
   const dirty = useRef(false);
 
   useEffect(() => {
@@ -102,6 +104,7 @@ export function useRunStream(runId: string | null): StreamState {
       lastSeq: storedSeq,
       status: "connecting",
       system: null,
+      snapshotSeen: null,
     };
     dirty.current = true;
 
@@ -147,6 +150,8 @@ export function useRunStream(runId: string | null): StreamState {
           .filter((event) => event.name.length > 0);
       }
       buffer.runState = typeof data.state === "string" ? data.state : null;
+      buffer.snapshotSeen =
+        typeof data.last_seq === "number" ? data.last_seq : null;
       dirty.current = true;
     };
 
@@ -167,7 +172,15 @@ export function useRunStream(runId: string | null): StreamState {
         applySnapshot(data);
         return;
       }
+      // Replayed metric/event/state records already in the snapshot are
+      // duplicates; log/system are never in the snapshot [doc 05 §8].
+      const duplicateReplay = isDuplicateReplay(
+        message.type,
+        message.seq,
+        buffer.snapshotSeen,
+      );
       if (message.type === "metric") {
+        if (duplicateReplay) return;
         const batch = data.batch;
         if (Array.isArray(batch)) {
           buffer.metrics.push(...batch.filter(isMetricPoint));
@@ -183,8 +196,10 @@ export function useRunStream(runId: string | null): StreamState {
         });
         buffer.logs = buffer.logs.slice(-MAX_LOGS);
       } else if (message.type === "state") {
+        if (duplicateReplay) return;
         buffer.runState = typeof data.to === "string" ? data.to : buffer.runState;
       } else if (message.type === "event") {
+        if (duplicateReplay) return;
         buffer.events.push({
           ts: String(message.ts ?? ""),
           name: String(data.name ?? "event"),

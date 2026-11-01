@@ -5,6 +5,7 @@ import { TopBar } from "./components/TopBar";
 import { RunsList } from "./pages/RunsList";
 import { VerifyDemo } from "./pages/VerifyDemo";
 import { Wizard } from "./pages/Wizard";
+import { CheckpointsPage } from "./pages/CheckpointsPage";
 import { applyTheme, initialTheme, type Theme } from "./lib/theme";
 
 // Lazy-loaded so ECharts lands in a separate chunk [code-splitting].
@@ -12,7 +13,7 @@ const LiveRun = lazy(() =>
   import("./pages/LiveRun").then((module) => ({ default: module.LiveRun })),
 );
 
-type View = "home" | "runs" | "verify" | "wizard";
+type View = "home" | "runs" | "verify" | "wizard" | "checkpoints";
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
@@ -47,6 +48,7 @@ export default function App() {
     setOpenRunId(null);
     if (item === "Runs") setView("runs");
     else if (item === "Datasets") setView("verify");
+    else if (item === "Checkpoints") setView("checkpoints");
     else setView("home");
   }
 
@@ -85,6 +87,16 @@ export default function App() {
             </section>
           ) : view === "verify" ? (
             <VerifyDemo />
+          ) : view === "checkpoints" ? (
+            <section className="flex flex-col gap-4">
+              <header>
+                <h1 className="text-3xl font-semibold">Checkpoints</h1>
+                <p className="mt-1 text-text-secondary">
+                  Pretrained checkpoints in the catalog, with local cache status.
+                </p>
+              </header>
+              <CheckpointsPage />
+            </section>
           ) : view === "wizard" ? (
             <Wizard
               onTrained={(runId) => {
