@@ -11,7 +11,6 @@ boxes with aux + denoising aux losses); metrics are ``train/loss`` and
 from __future__ import annotations
 
 import json
-import math
 import random
 from collections import defaultdict
 from pathlib import Path
@@ -24,6 +23,7 @@ from PIL import Image
 
 from app.storage.atomic import atomic_write_json
 from app.training.base import Issue, RunContext, TrainerPlugin, TrainResult
+from app.training.engine import EngineHooks, TrainEngine, load_best_checkpoint
 
 # Head tensors whose shapes depend on the class count. ``denoising_class_embed``
 # is (N+1, 256) (one extra background slot); the score heads are (N, 256)/(N,).
@@ -592,9 +592,20 @@ class RTDetrTrainer(TrainerPlugin):
         self._postprocessor = RTDETRPostProcessor(
             num_classes=self._num_classes, use_focal_loss=True, num_top_queries=300
         )
-        self._start_epoch = 1
-        self._best_map = -1.0
-        self._best_epoch = 0
+        self._engine = TrainEngine(
+            hooks=EngineHooks(
+                batches=lambda: _batches(self._train_samples, self._batch_size),
+                train_step=self._train_batch,
+                evaluate=self._evaluate_map,
+                set_train_mode=self._set_train_mode,
+                model_state=self._model.state_dict,
+                load_model_state=self._model.load_state_dict,
+                optimizer_state=self._optimizer.state_dict,
+                load_optimizer_state=self._optimizer.load_state_dict,
+                export_best=self._export_best,
+            ),
+            epochs=self._epochs,
+        )
         freeze = bool(ctx.config.get("freeze_backbone", True))
         frozen = "backbone frozen" if freeze else "full model"
         test_note = (
@@ -610,51 +621,7 @@ class RTDetrTrainer(TrainerPlugin):
         )
 
     def train(self, ctx: RunContext) -> TrainResult:
-        epoch = self._start_epoch - 1
-        for epoch in range(self._start_epoch, self._epochs + 1):
-            if ctx.should_stop():
-                break
-            self._model.train()
-            running_loss = 0.0
-            seen = 0
-            for batch in _batches(self._train_samples, self._batch_size):
-                if ctx.should_pause():
-                    ctx.wait_if_paused()
-                if ctx.should_stop():
-                    break
-                loss = self._train_batch(batch)
-                if math.isnan(loss) or math.isinf(loss):
-                    raise ValueError(f"nan/inf loss at epoch {epoch}")
-                running_loss += loss
-                seen += 1
-            if ctx.should_stop():
-                break
-            # Epoch-mean train loss, one point per epoch (step == epoch) [doc 08 §6].
-            train_loss = running_loss / max(seen, 1)
-            ctx.emit_metric("train/loss", float(train_loss), epoch, epoch, "train")
-            val_map = self._evaluate_map()
-            if math.isnan(val_map):
-                raise ValueError(f"nan validation mAP at epoch {epoch}")
-            ctx.emit_metric("val/mAP50", val_map, epoch, epoch, "val")
-            improved = val_map > self._best_map
-            ctx.emit_log(
-                "INFO",
-                f"epoch {epoch}/{self._epochs} train/loss={train_loss:.4f} "
-                f"val/mAP50={val_map:.4f}",
-            )
-            self._save(ctx, epoch, is_best=improved)
-            if improved:
-                self._best_map = val_map
-                self._best_epoch = epoch
-        return TrainResult(
-            best={
-                "metric": "val/mAP50",
-                "value": round(max(self._best_map, 0.0), 4),
-                "epoch": self._best_epoch,
-            },
-            epochs=epoch,
-            note=f"val/mAP50={max(self._best_map, 0.0):.4f}",
-        )
+        return self._engine.run(ctx)
 
     def evaluate(self, ctx: RunContext) -> dict[str, Any]:
         """Final detection metrics from the best weights: val + held-out test [doc 08 §6]."""
@@ -684,25 +651,11 @@ class RTDetrTrainer(TrainerPlugin):
         return result
 
     def resume(self, ctx: RunContext, checkpoint_path: Path) -> None:
-        payload = torch.load(checkpoint_path, map_location=self._device, weights_only=True)
-        if isinstance(payload, dict) and "model_state" in payload:
-            self._model.load_state_dict(payload["model_state"])
-            self._optimizer.load_state_dict(payload["optimizer_state"])
-            self._start_epoch = int(payload.get("epoch", 0)) + 1
-            self._best_map = float(payload.get("best_map", -1.0))
-            self._best_epoch = int(payload.get("best_epoch", 0))
-            ctx.emit_log(
-                "INFO", f"resumed from {checkpoint_path.name} at epoch {self._start_epoch}"
-            )
-        else:
-            self._model.load_state_dict(payload)
-            ctx.emit_log("INFO", f"loaded weights from {checkpoint_path.name} (no optimizer state)")
+        self._engine.resume(ctx, checkpoint_path, self._device)
 
     # -- internals -----------------------------------------------------------
 
-    def _load_samples(
-        self, ctx: RunContext
-    ) -> tuple[list[Any], list[Any], list[Any]]:
+    def _load_samples(self, ctx: RunContext) -> tuple[list[Any], list[Any], list[Any]]:
         """Read manifest.parquet; boxes are [class_id, cx, cy, w, h] normalized.
 
         Returns ``(train, val, test)``. ``test`` is held out: never trained on
@@ -890,9 +843,7 @@ class RTDetrTrainer(TrainerPlugin):
         images: list[dict[str, Any]] = []
         for split_name, samples in splits:
             images.extend(self._predict_split(ctx, split_name, samples, threshold))
-        payload = build_predictions_payload(
-            names, threshold, images, [name for name, _ in splits]
-        )
+        payload = build_predictions_payload(names, threshold, images, [name for name, _ in splits])
         ctx.output_dir.mkdir(parents=True, exist_ok=True)
         atomic_write_json(ctx.output_dir / "predictions.json", payload)
         total_errors = sum(int(image["error_score"]) for image in images)
@@ -962,40 +913,14 @@ class RTDetrTrainer(TrainerPlugin):
 
     def _load_best_weights(self, ctx: RunContext) -> None:
         """Evaluate the checkpoint that was actually kept, not the last epoch."""
-        best = ctx.output_dir.parent / "checkpoints" / "best.ckpt"
-        if not best.is_file():
-            ctx.emit_log(
-                "INFO", "no best.ckpt found: evaluating the final epoch weights"
-            )
-            return
-        payload = torch.load(best, map_location=self._device, weights_only=True)
-        state = payload.get("model_state") if isinstance(payload, dict) else None
-        if not isinstance(state, dict):
-            ctx.emit_log("WARNING", f"{best.name} has no model_state: evaluating last weights")
-            return
-        self._model.load_state_dict(state)
-        epoch = payload.get("epoch") if isinstance(payload, dict) else None
-        self._model.eval()
-        ctx.emit_log("INFO", f"evaluation uses best weights from {best.name} (epoch {epoch})")
+        device = getattr(self, "_device", "cpu")
+        if load_best_checkpoint(ctx, device, self._model.load_state_dict) is not None:
+            self._model.eval()
 
-    def _save(self, ctx: RunContext, epoch: int, *, is_best: bool) -> None:
-        checkpoints = ctx.output_dir.parent / "checkpoints"
-        checkpoints.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "schema_version": 1,
-            "epoch": epoch,
-            "model_state": self._model.state_dict(),
-            "optimizer_state": self._optimizer.state_dict(),
-            "best_map": self._best_map,
-            "best_epoch": self._best_epoch,
-        }
-        last = checkpoints / "last.ckpt"
-        torch.save(payload, last)
-        ctx.save_checkpoint(last, is_best=False, metrics={"epoch": epoch})
-        if is_best:
-            best = checkpoints / "best.ckpt"
-            torch.save(payload, best)
-            # Ultralytics-compatible copy of the best weights (no optimizer state)
-            # so the export can be loaded by the upstream tooling [doc 08 §6].
-            torch.save({"ema": {"module": self._model.state_dict()}}, checkpoints / "weights.pth")
-            ctx.save_checkpoint(best, is_best=True, metrics={"epoch": epoch})
+    def _set_train_mode(self) -> None:
+        self._model.train()
+
+    def _export_best(self, checkpoints: Path) -> None:
+        # Ultralytics-compatible copy of the best weights (no optimizer state)
+        # so the export can be loaded by the upstream tooling [doc 08 §6].
+        torch.save({"ema": {"module": self._model.state_dict()}}, checkpoints / "weights.pth")

@@ -147,3 +147,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - Golden test `backend/tests/test_rtdetr_golden.py` + `backend/tests/golden/rtdetr_dev_preset.json` (D130). Ran twice: 2 passed each time; a deliberately wrong golden file fails with a diff table (`epoch 1 train/loss ... (rel 0.001)`, `evaluation.val.mAP50 ... (abs 0.02)`).
 - Determinism test (`test_same_seed_is_deterministic`) compares two runs field by field — exact match.
 - Honest limitation recorded: mAP50 is 0.0 at 2 epochs on this fixture, so the golden pins loss/splits/counts/best-epoch (D131). No refactor started, no new dependency.
+
+## A1 + A2 (2026-11-09)
+- A1: golden now learns (val mAP50 0.70, test 0.725, ~40 s CPU); re-recorded, passes twice + determinism test (D132).
+- A2: `training/engine.py` extracted, `rtdetr.py` delegates; golden unchanged; `tests/test_engine.py` covers tie-keeps-earlier, nan/inf guard, stop, exact resume (D133, D134). `make verify` green (268 passed).
