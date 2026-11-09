@@ -29,8 +29,17 @@ def _resolve_home(args: argparse.Namespace) -> Path:
 
 
 def _prefetch(args: argparse.Namespace) -> int:
-    resolver = CheckpointResolver(_resolve_home(args))
+    home = _resolve_home(args)
+    resolver = CheckpointResolver(home)
     try:
+        if args.accept_licence:
+            # Explicit opt-in: records the same local acceptance the UI would.
+            from app.checkpoints.catalog import find_entry, load_catalog
+            from app.checkpoints.licences import LicenceStore
+
+            entry = find_entry(load_catalog(home), args.catalog_id)
+            if entry is not None and entry.offered:
+                LicenceStore(home).accept(entry)
         resolved = resolver.prefetch(args.catalog_id)
     except CheckpointError as exc:
         _print({"error": {"code": exc.code, "message": exc.message, "details": exc.details}})
@@ -139,6 +148,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     prefetch = nested.add_parser("prefetch", help="download a catalog entry now")
     prefetch.add_argument("catalog_id")
+    prefetch.add_argument(
+        "--accept-licence",
+        action="store_true",
+        help="record that you accepted this entry's licence terms (stored locally)",
+    )
     prefetch.set_defaults(handler=_prefetch)
 
     importer = nested.add_parser("import", help="import an already-downloaded file")

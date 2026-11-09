@@ -12,7 +12,8 @@ from typing import Any, cast
 
 from fastapi import APIRouter, Request
 
-from app.checkpoints.catalog import CatalogError, ensure_catalog, load_catalog
+from app.checkpoints.catalog import CatalogEntry, CatalogError, ensure_catalog, load_catalog
+from app.checkpoints.licences import LicenceStore
 from app.checkpoints.resolver import CheckpointError, CheckpointIndex, CheckpointResolver
 from app.core.config import Settings
 from app.core.errors import ApiError
@@ -26,10 +27,28 @@ def _settings(request: Request) -> Settings:
     return cast(Settings, request.app.state.settings)
 
 
-def _catalog_id(value: str) -> str:
+def catalog_id_or_400(value: str) -> str:
     if not CATALOG_ID_PATTERN.match(value):
         raise ApiError(400, "INVALID_CATALOG_ID", "catalog id must look like name@version")
     return value
+
+
+_catalog_id = catalog_id_or_400
+
+
+def describe_entry(
+    entry: CatalogEntry, index: dict[str, dict[str, Any]], accepted: LicenceStore
+) -> dict[str, Any]:
+    """Catalog entry + local cache state + licence acceptance (shared with /models)."""
+    record = index.get(entry.catalog_id) or {}
+    local = bool(record.get("status") == "ready")
+    return {
+        **entry.as_dict(),
+        "local": local,
+        "local_size_bytes": record.get("size") if local else None,
+        "last_used_at": record.get("last_used_at") if local else None,
+        "licence_accepted": accepted.is_accepted(entry),
+    }
 
 
 def _error(exc: CheckpointError) -> ApiError:
@@ -38,26 +57,27 @@ def _error(exc: CheckpointError) -> ApiError:
 
 
 @router.get("")
-def list_checkpoints(request: Request) -> dict[str, Any]:
+def list_checkpoints(
+    request: Request,
+    task: str | None = None,
+    format: str | None = None,  # noqa: A002 - query parameter name
+    family: str | None = None,
+) -> dict[str, Any]:
     settings = _settings(request)
     try:
         entries = load_catalog(settings.home)
     except CatalogError as exc:
         raise ApiError(500, "CATALOG_INVALID", str(exc)) from exc
     index = CheckpointIndex(settings.home).read()
+    accepted = LicenceStore(settings.home)
     usage = shutil.disk_usage(settings.home)
-    items: list[dict[str, Any]] = []
-    for entry in entries:
-        record = index.get(entry.catalog_id) or {}
-        local = bool(record.get("status") == "ready")
-        items.append(
-            {
-                **entry.as_dict(),
-                "local": local,
-                "local_size_bytes": record.get("size") if local else None,
-                "last_used_at": record.get("last_used_at") if local else None,
-            }
-        )
+    items = [
+        describe_entry(entry, index, accepted)
+        for entry in entries
+        if (task is None or task in entry.task_types)
+        and (format is None or format in entry.formats)
+        and (family is None or entry.model_family == family)
+    ]
     return {
         "items": items,
         "total": len(items),

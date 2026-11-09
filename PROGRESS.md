@@ -155,3 +155,8 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 ## Slice B — verification honesty (2026-11-09)
 - Zero-box detection dataset now fails (`can_train=false`); few empties only warn. Full corrupt scan (test: corrupt file after `sample_cap` is found). New `box_geometry` warn. Inline fix hint in CheckList. VERIFIER_VERSION 1.2.0.
 - Tests: 5 new in `test_verification_checks.py`; Playwright `failed check shows message and fix hint inline` (3 wizard e2e passed against a local backend on :8091). `make verify` green (273 passed).
+
+## Slice C — Model Zoo + licence card (2026-11-09)
+- Catalog schema extended; `rtdetr-r18vd@coco-1.0` offered with verified URL/sha256/size; others "not offered yet". New `checkpoints/licences.py`, `api/licences.py`, resolver gate, `/checkpoints` filters, `/models` variants, CLI `--accept-licence`.
+- UI: variant radio list + `LicenceCard` (code/weights licence, commercial flag, size, VRAM, links, VERIFY chip, "I accept"); gating on Configure Next / Start Training; Checkpoints page shows variant, VERIFY, accepted.
+- Tests: `test_licences.py` (new, 9), schema/offered tests in `test_checkpoints.py`; existing resolver-using tests now pre-accept. Playwright: `licence-logic.spec.ts` (5) + wizard licence flow (accept POST stubbed). `make verify` green (284 passed).

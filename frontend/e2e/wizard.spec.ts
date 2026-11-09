@@ -232,3 +232,58 @@ test("failed check shows message and fix hint inline", async ({ page }) => {
   });
   await expect(page.getByTestId("check-hint-empty_labels")).toContainText("Add annotations");
 });
+
+// Licence card + accept flow [Slice C]. The catalog comes from the real backend;
+// the accept POST is stubbed so the test is repeatable (the server-side record and
+// the 409 gate are covered by backend/tests/test_licences.py), but the stub only
+// answers when the browser really sends the catalog id.
+test("licence card blocks Configure Next until the licence is accepted", async ({ page }) => {
+  let acceptedId: string | null = null;
+  await page.route("**/api/v1/licences/accept", async (route) => {
+    acceptedId = (route.request().postDataJSON() as { catalog_id: string }).catalog_id;
+    await route.fulfill({ json: { catalog_id: acceptedId, accepted: true } });
+  });
+  await page.route("**/api/v1/verifications/*", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      json: {
+        id: "ver_mock_lic",
+        status: "passed",
+        can_train: true,
+        checks: [],
+        derived: { task_type: "object_detection", format: "yolo" },
+      },
+    });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "New training" }).click();
+  await page.locator("#dataset-file-input").setInputFiles({
+    name: "apple-orange.zip",
+    mimeType: "application/zip",
+    buffer: makeYoloZip(),
+  });
+  await page.getByTestId("model-rtdetr").click();
+  await page.getByTestId("start-verification").click();
+  await expect(page.getByText("Dataset verified successfully")).toBeVisible({ timeout: 60_000 });
+  const ack = page.getByTestId("ack-warnings");
+  if (await ack.isVisible()) await ack.check();
+  await page.getByTestId("verify-next").click();
+
+  await page.getByTestId("variant-rtdetr-r18vd@coco-1.0").check();
+  const card = page.getByTestId("licence-card");
+  await expect(card).toContainText("Apache-2.0");
+  await expect(page.getByTestId("verify-chip")).toBeVisible();
+  await expect(page.getByTestId("commercial-use")).toContainText("unknown");
+  await expect(page.getByTestId("configure-next")).toBeDisabled();
+  await expect(page.getByTestId("licence-block")).toContainText("Accept the licence");
+
+  await page.getByTestId("accept-licence").click();
+  await expect(page.getByTestId("accept-licence")).toBeChecked();
+  expect(acceptedId).toBe("rtdetr-r18vd@coco-1.0");
+  await expect(page.getByTestId("configure-next")).toBeEnabled();
+
+  // A variant with no verified download is listed but cannot be used.
+  await page.getByTestId("variant-rtdetr-l@1.0").check();
+  await expect(page.getByTestId("not-offered-chip")).toBeVisible();
+  await expect(page.getByTestId("configure-next")).toBeDisabled();
+});

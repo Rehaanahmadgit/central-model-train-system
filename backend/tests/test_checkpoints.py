@@ -16,6 +16,7 @@ import pytest
 import yaml
 
 from app.checkpoints.catalog import CatalogError, ensure_catalog, load_catalog
+from app.checkpoints.licences import LicenceStore
 from app.checkpoints.resolver import (
     CheckpointError,
     CheckpointIndex,
@@ -79,6 +80,14 @@ def _write_catalog(home: Path, entries: list[dict]) -> None:
     (home / "checkpoints" / "catalog.yaml").write_text(
         yaml.safe_dump(entries), encoding="utf-8"
     )
+    _accept_all(home)
+
+
+def _accept_all(home: Path) -> None:
+    """Pretend the user accepted every licence; licence gating is tested in test_licences."""
+    store = LicenceStore(home)
+    for entry in load_catalog(home):
+        store.accept(entry)
 
 
 def _entry(uri: str, **overrides: object) -> dict:
@@ -102,12 +111,44 @@ def _entry(uri: str, **overrides: object) -> dict:
 # --- catalog ----------------------------------------------------------------
 
 
-def test_shipped_catalog_is_placeholder_only(tmp_path: Path) -> None:
-    """Defaults must never claim a verified hash [doc 07 §2]."""
-    entries = load_catalog(tmp_path)
+R18VD_SHA = "3ba8b5c909c9a1c4f21e96d0a7251ab1a485093955ca327d0061fef8d33c66f0"
+
+
+def test_shipped_catalog_only_offers_verified_entries(tmp_path: Path) -> None:
+    """Only rtdetr-r18vd has a verified hash + URL; everything else is "not offered yet"."""
+    entries = {entry.catalog_id: entry for entry in load_catalog(tmp_path)}
     assert entries, "a default catalog must ship"
-    assert all(not entry.verified for entry in entries)
-    assert all("TODO(user)" in (entry.sha256 or "") for entry in entries)
+    offered = {cid for cid, entry in entries.items() if entry.offered}
+    assert offered == {"rtdetr-r18vd@coco-1.0"}
+    r18 = entries["rtdetr-r18vd@coco-1.0"]
+    assert (r18.sha256, r18.size_bytes) == (R18VD_SHA, 81001853)
+    assert r18.source_uri.startswith("https://")
+    for entry in entries.values():
+        if not entry.offered:
+            assert "TODO(user)" in (entry.sha256 or "")
+
+
+def test_shipped_catalog_never_claims_a_verified_weights_licence(tmp_path: Path) -> None:
+    for entry in load_catalog(tmp_path):
+        assert entry.weights_license["verified"] is False
+        assert entry.commercial_use == "unknown"
+        assert entry.min_vram_gb == 0  # 0 = not measured
+
+
+def test_shipped_catalog_schema_has_every_required_field() -> None:
+    from app.checkpoints.catalog import DEFAULT_CATALOG, REQUIRED_SHIPPED_KEYS
+
+    items = yaml.safe_load(DEFAULT_CATALOG.read_text(encoding="utf-8"))
+    assert items
+    for item in items:
+        missing = [key for key in REQUIRED_SHIPPED_KEYS if key not in item]
+        assert not missing, f"{item.get('name')}: missing {missing}"
+        assert set(item["code_license"]) == {"spdx", "url"}
+        assert set(item["weights_license"]) == {"spdx", "url", "verified"}
+        assert item["commercial_use"] in (True, False, "unknown")
+        assert isinstance(item["formats"], list) and item["formats"]
+    ids = [f"{item['name']}@{item['version']}" for item in items]
+    assert len(ids) == len(set(ids))
 
 
 def test_override_replaces_entry(tmp_path: Path) -> None:
@@ -333,13 +374,16 @@ def test_cli_rescan_restores_index(tmp_path: Path, http_server: str) -> None:
 def _patch_catalog(home: Path, entries: list[dict]) -> None:
     ensure_catalog(home)
     (home / "checkpoints" / "catalog.yaml").write_text(yaml.safe_dump(entries), encoding="utf-8")
+    _accept_all(home)
 
 
 def test_api_lists_catalog_with_local_flag(client, home: Path) -> None:
     ensure_catalog(home)
     body = client.get("/api/v1/checkpoints").json()
     assert body["total"] >= 1
-    assert all(item["verified"] is False for item in body["items"])
+    assert {item["catalog_id"] for item in body["items"] if item["offered"]} == {
+        "rtdetr-r18vd@coco-1.0"
+    }
     assert all(item["local"] is False for item in body["items"])
     assert body["disk"]["free_bytes"] > 0
 

@@ -207,6 +207,11 @@ def test_checkpoint_resolved_at_start(client: TestClient, home: Path) -> None:
         ),
         encoding="utf-8",
     )
+    from app.checkpoints.catalog import load_catalog
+    from app.checkpoints.licences import LicenceStore
+
+    for entry in load_catalog(home):  # the user accepted the licence in the UI
+        LicenceStore(home).accept(entry)
     run_id = _start_run(
         client,
         entries=build_classification(per_class=3, size=(32, 32)),

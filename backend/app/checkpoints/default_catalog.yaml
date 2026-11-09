@@ -1,35 +1,86 @@
 # Shipped catalog defaults [doc 07 §2, doc 14 §5].
 #
-# Every outbound field below is a PLACEHOLDER: real URLs and sha256 values must
-# be supplied by the operator (TODO(user)). An entry with a placeholder sha256
-# is "unverified" and the resolver refuses to download it, because sha256
-# verification is mandatory [doc 10 §4]. Copy entries into
-# $TRAINHUB_HOME/checkpoints/catalog.override.yaml to add or replace them
-# without rebuilding the image.
+# Rules (nothing below is guessed):
+#  * An entry is OFFERED (downloadable) only when sha256 is a real 64-hex hash
+#    AND source_uri is a real URL. Anything marked TODO(user) is "not offered
+#    yet": the resolver refuses it and the UI says so.
+#  * weights_license.verified stays false until someone has read the licence of
+#    the weights themselves (not just the code repo). spdx null = not found.
+#  * commercial_use is true / false / unknown. unknown is the honest default.
+#  * min_vram_gb 0 = not measured.
+# Copy entries into $TRAINHUB_HOME/checkpoints/catalog.override.yaml to add or
+# replace them without rebuilding the image.
+
+- name: rtdetr-r18vd
+  version: coco-1.0
+  model_family: rtdetr
+  variant: r18vd
+  task_types: [object_detection]
+  formats: [yolo]
+  pretrained_on: coco
+  source_type: url
+  # URL from the upstream README (rtdetr_pytorch); file downloaded and hashed
+  # 2026-11-09: sha256 and size below match the real file.
+  source_uri: "https://github.com/lyuwenyu/storage/releases/download/v0.1/rtdetr_r18vd_dec3_6x_coco_from_paddle.pth"
+  sha256: "3ba8b5c909c9a1c4f21e96d0a7251ab1a485093955ca327d0061fef8d33c66f0"
+  size_bytes: 81001853
+  filename: rtdetr_r18vd_dec3_6x_coco_from_paddle.pth
+  code_license:
+    spdx: Apache-2.0
+    url: "https://github.com/lyuwenyu/RT-DETR/blob/main/LICENSE"
+  weights_license:
+    spdx: null   # NOT FOUND: the repo licenses the code; no separate weights licence located
+    url: "https://github.com/lyuwenyu/RT-DETR"
+    verified: false
+  commercial_use: unknown
+  min_vram_gb: 0
+  license: "code Apache-2.0; weights licence unverified"
+  notes: "RT-DETR r18vd, COCO pretrained (the variant this app trains)."
+
 - name: rtdetr-l
   version: "1.0"
   model_family: rtdetr
+  variant: l
   task_types: [object_detection]
+  formats: [yolo]
   pretrained_on: coco
   source_type: url
   source_uri: "TODO(user): provide the official RT-DETR-L weights URL"
   sha256: "TODO(user): provide the verified sha256"
   size_bytes: 0
-  license: "TODO(user): provide the license"
-  min_vram_gb: 4
   filename: rtdetr-l.pt
-  notes: "Detection backbone; COCO pretrained."
+  code_license:
+    spdx: Apache-2.0
+    url: "https://github.com/lyuwenyu/RT-DETR/blob/main/LICENSE"
+  weights_license:
+    spdx: null
+    url: null
+    verified: false
+  commercial_use: unknown
+  min_vram_gb: 0
+  license: "TODO(user): provide the license"
+  notes: "Not offered yet: no verified URL/sha256."
 
 - name: resnet50
   version: imagenet-1k
   model_family: resnet
+  variant: "50"
   task_types: [image_classification]
+  formats: [image_folder]
   pretrained_on: imagenet
   source_type: url
   source_uri: "TODO(user): provide the official ResNet-50 weights URL"
   sha256: "TODO(user): provide the verified sha256"
   size_bytes: 0
-  license: "TODO(user): provide the license"
-  min_vram_gb: 2
   filename: resnet50.pth
-  notes: "ImageNet-1k classification backbone."
+  code_license:
+    spdx: null
+    url: null
+  weights_license:
+    spdx: null
+    url: null
+    verified: false
+  commercial_use: unknown
+  min_vram_gb: 0
+  license: "TODO(user): provide the license"
+  notes: "Not offered yet: no verified URL/sha256."

@@ -203,8 +203,9 @@ def test_recommend_hparams_uses_gpu_batch() -> None:
 
 def test_catalog_missing_returns_empty_and_no_invented_ids(tmp_path: Path) -> None:
     # No workspace home → no catalog is consulted, so nothing is recommended.
-    assert load_catalog(tmp_path) == [] or all(
-        not entry.verified for entry in load_catalog(tmp_path)
+    assert all(
+        not entry.verified or entry.catalog_id == "rtdetr-r18vd@coco-1.0"
+        for entry in load_catalog(tmp_path)
     )
     raw = materialize(tmp_path / "raw", build_yolo())
     outcome = _run(raw)

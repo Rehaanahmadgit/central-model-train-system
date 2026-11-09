@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api.checkpoints import router as checkpoints_router
 from app.api.datasets import router as datasets_router
+from app.api.licences import router as licences_router
 from app.api.models import router as models_router
 from app.api.projects import router as projects_router
 from app.api.runs import router as runs_router
@@ -17,6 +18,7 @@ api_router.include_router(uploads_router)
 api_router.include_router(datasets_router)
 api_router.include_router(verifications_router)
 api_router.include_router(checkpoints_router)
+api_router.include_router(licences_router)
 api_router.include_router(models_router)
 api_router.include_router(runs_router)
 api_router.include_router(system_router)

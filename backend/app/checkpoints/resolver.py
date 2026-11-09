@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from app.checkpoints.catalog import CatalogEntry, find_entry, load_catalog
+from app.checkpoints.licences import LicenceStore
 from app.storage.atomic import atomic_write_json, read_json
 from app.storage.locks import FileLock
 
@@ -116,7 +117,9 @@ class CheckpointResolver:
         timeout_seconds: float = 30.0,
         lock_timeout_seconds: float | None = None,
         progress: Progress | None = None,
+        require_licence: bool = True,
     ) -> None:
+        self._require_licence = require_licence
         self._home = home
         self._checkpoints = home / "checkpoints"
         self._store = self._checkpoints / "store"
@@ -138,6 +141,7 @@ class CheckpointResolver:
                 f"catalog entry {catalog_id!r} is not active",
                 {"catalog_id": catalog_id},
             )
+        self._check_licence(entry)
         cached = self._usable_from_cache(entry)
         if cached is not None:
             self._emit("cache_hit", entry, {"path": str(cached.path)})
@@ -242,6 +246,19 @@ class CheckpointResolver:
                 {"catalog_id": catalog_id},
             )
         return entry
+
+    def _check_licence(self, entry: CatalogEntry) -> None:
+        """Server-side gate: no weights are used or downloaded before acceptance."""
+        if self._require_licence and not LicenceStore(self._home).is_accepted(entry):
+            raise CheckpointError(
+                "LICENCE_NOT_ACCEPTED",
+                (
+                    f"licence for {entry.catalog_id!r} has not been accepted. "
+                    "Review and accept it in the Model step "
+                    "(or POST /api/v1/licences/accept)."
+                ),
+                {"catalog_id": entry.catalog_id, "terms_sha256": entry.terms_sha256},
+            )
 
     def _checkpoint_lock(self, entry: CatalogEntry) -> FileLock:
         """Per-catalog-id flock: one downloader, the rest wait [doc 07 §7]."""

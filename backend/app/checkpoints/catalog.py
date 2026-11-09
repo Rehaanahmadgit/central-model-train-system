@@ -11,6 +11,8 @@ resolver refuses to download them because sha256 verification is mandatory
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +50,11 @@ class CatalogEntry:
     filename: str = ""
     is_active: bool = True
     notes: str = ""
+    variant: str = ""
+    formats: tuple[str, ...] = ()
+    code_license: dict[str, Any] = field(default_factory=dict)
+    weights_license: dict[str, Any] = field(default_factory=dict)
+    commercial_use: bool | str = "unknown"  # True / False / "unknown"
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -58,6 +65,31 @@ class CatalogEntry:
     def verified(self) -> bool:
         """A real 64-hex hash is present, so a download can be checked [doc 10 §4]."""
         return not is_placeholder_sha(self.sha256)
+
+    @property
+    def offered(self) -> bool:
+        """Downloadable: verified sha256 AND a real source (not a TODO placeholder)."""
+        uri = self.source_uri.strip()
+        return self.verified and bool(uri) and PLACEHOLDER_PREFIX not in uri
+
+    @property
+    def weights_license_verified(self) -> bool:
+        return bool(self.weights_license.get("verified"))
+
+    def licence_terms(self) -> dict[str, Any]:
+        """Everything the user agrees to; hashed so a change re-asks [Slice C]."""
+        return {
+            "catalog_id": self.catalog_id,
+            "code_license": self.code_license,
+            "weights_license": self.weights_license,
+            "commercial_use": self.commercial_use,
+            "source_uri": self.source_uri,
+        }
+
+    @property
+    def terms_sha256(self) -> str:
+        blob = json.dumps(self.licence_terms(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
     @property
     def resolved_filename(self) -> str:
@@ -84,6 +116,14 @@ class CatalogEntry:
             "is_active": self.is_active,
             "notes": self.notes,
             "verified": self.verified,
+            "offered": self.offered,
+            "variant": self.variant,
+            "formats": list(self.formats),
+            "code_license": self.code_license,
+            "weights_license": self.weights_license,
+            "weights_license_verified": self.weights_license_verified,
+            "commercial_use": self.commercial_use,
+            "terms_sha256": self.terms_sha256,
         }
 
 
@@ -106,7 +146,48 @@ _KNOWN_KEYS = {
     "filename",
     "is_active",
     "notes",
+    "variant",
+    "formats",
+    "code_license",
+    "weights_license",
+    "commercial_use",
 }
+
+# Keys every shipped catalog entry must spell out (checked by tests; operator
+# overrides stay lenient so an old override file keeps loading).
+REQUIRED_SHIPPED_KEYS = (
+    "name",
+    "version",
+    "model_family",
+    "variant",
+    "task_types",
+    "formats",
+    "pretrained_on",
+    "source_type",
+    "source_uri",
+    "sha256",
+    "size_bytes",
+    "filename",
+    "code_license",
+    "weights_license",
+    "commercial_use",
+    "min_vram_gb",
+)
+
+
+def _licence_block(value: Any, origin: str, field_name: str) -> dict[str, Any]:
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise CatalogError(f"{origin}: {field_name} must be a mapping")
+    block: dict[str, Any] = {"spdx": value.get("spdx") or None, "url": value.get("url") or None}
+    if field_name == "weights_license":
+        block["verified"] = value.get("verified") is True  # only an explicit true counts
+    return block
+
+
+def _commercial(value: Any) -> bool | str:
+    return value if isinstance(value, bool) else "unknown"
 
 
 def _parse_entry(item: dict[str, Any], origin: str) -> CatalogEntry:
@@ -134,6 +215,11 @@ def _parse_entry(item: dict[str, Any], origin: str) -> CatalogEntry:
         filename=str(item.get("filename") or ""),
         is_active=bool(item.get("is_active", True)),
         notes=str(item.get("notes") or ""),
+        variant=str(item.get("variant") or ""),
+        formats=tuple(str(value) for value in (item.get("formats") or [])),
+        code_license=_licence_block(item.get("code_license"), origin, "code_license"),
+        weights_license=_licence_block(item.get("weights_license"), origin, "weights_license"),
+        commercial_use=_commercial(item.get("commercial_use")),
         extra={key: value for key, value in item.items() if key not in _KNOWN_KEYS},
     )
 

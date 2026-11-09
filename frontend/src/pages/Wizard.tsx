@@ -3,6 +3,8 @@ import { apiFetch } from "../lib/api";
 import { CheckList } from "../components/CheckList";
 import { SummaryCards } from "../components/SummaryCards";
 import { RecommendedCheckpoint } from "../components/RecommendedCheckpoint";
+import { LicenceCard } from "../components/LicenceCard";
+import { licenceGate, type CatalogVariant } from "../lib/licence";
 import {
   coerceConfig,
   isNumericProperty,
@@ -62,6 +64,7 @@ export function Wizard({ onTrained, edit = null }: WizardProps) {
   const [fromScratch, setFromScratch] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [licenceBlock, setLicenceBlock] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // "Edit & run" from the Live Run page: jump straight to Configure with the
@@ -213,6 +216,7 @@ export function Wizard({ onTrained, edit = null }: WizardProps) {
           onCheckpoint={setCheckpointCatalogId}
           fromScratch={fromScratch}
           onFromScratch={setFromScratch}
+          onLicenceBlock={setLicenceBlock}
           onBack={() => setStep(2)}
           onNext={() => setStep(4)}
         />
@@ -226,6 +230,7 @@ export function Wizard({ onTrained, edit = null }: WizardProps) {
           checkpointCatalogId={checkpointCatalogId}
           fromScratch={fromScratch}
           starting={starting}
+          licenceBlock={licenceBlock}
           onStart={() => void startTraining()}
           onBack={() => setStep(3)}
         />
@@ -591,6 +596,7 @@ interface ConfigureStepProps {
   onCheckpoint: (value: string | null) => void;
   fromScratch: boolean;
   onFromScratch: (value: boolean) => void;
+  onLicenceBlock: (message: string | null) => void;
   onBack: () => void;
   onNext: () => void;
 }
@@ -598,6 +604,56 @@ interface ConfigureStepProps {
 function ConfigureStep(props: ConfigureStepProps) {
   const { model, config, onChange } = props;
   const [advanced, setAdvanced] = useState(false);
+  const [variants, setVariants] = useState<CatalogVariant[] | null>(null);
+  const [variantsError, setVariantsError] = useState<string | null>(null);
+  const [acceptBusy, setAcceptBusy] = useState(false);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
+
+  // Variants of this model family, from the catalog (offered ones are selectable).
+  useEffect(() => {
+    let disposed = false;
+    apiFetch<{ items: CatalogVariant[] }>(
+      `/api/v1/checkpoints?family=${encodeURIComponent(model.family)}`,
+    )
+      .then((body) => !disposed && setVariants(body.items))
+      .catch((exc) => !disposed && setVariantsError(exc instanceof Error ? exc.message : "Could not load the model catalog."));
+    return () => {
+      disposed = true;
+    };
+  }, [model.family]);
+
+  const selected = variants?.find((item) => item.catalog_id === props.checkpointCatalogId) ?? null;
+  const gate = licenceGate(props.checkpointCatalogId, props.fromScratch, selected, false);
+  const wantsCheckpoint = !props.fromScratch && Boolean(props.checkpointCatalogId);
+  let gateMessage: string | null = null;
+  if (wantsCheckpoint) {
+    if (variantsError) gateMessage = `Could not load the model catalog (${variantsError}), so the licence cannot be checked.`;
+    else if (variants === null) gateMessage = "Loading the model catalog…";
+    else gateMessage = gate.message;
+  }
+  const blocked = gateMessage !== null;
+  const { onLicenceBlock } = props;
+  useEffect(() => {
+    onLicenceBlock(blocked ? gateMessage : null);
+  }, [blocked, gateMessage, onLicenceBlock]);
+
+  async function acceptLicence(catalogId: string): Promise<void> {
+    setAcceptBusy(true);
+    setAcceptError(null);
+    try {
+      await apiFetch("/api/v1/licences/accept", {
+        method: "POST",
+        body: JSON.stringify({ catalog_id: catalogId }),
+      });
+      setVariants((current) =>
+        current?.map((item) => (item.catalog_id === catalogId ? { ...item, licence_accepted: true } : item)) ?? current,
+      );
+    } catch (exc) {
+      setAcceptError(exc instanceof Error ? exc.message : "Could not record the acceptance.");
+    } finally {
+      setAcceptBusy(false);
+    }
+  }
   const properties = propertiesOf(model.hparam_schema);
 
   const basicKeys = ["epochs", "lr", "batch_size", "imgsz", "dev_preset", "amp", "freeze_backbone"];
@@ -656,6 +712,28 @@ function ConfigureStep(props: ConfigureStepProps) {
             checkpoint or turn off freeze_backbone.
           </p>
         )}
+        {!props.fromScratch && variants && variants.length > 0 && (
+          <ul aria-label="Model variants" className="flex flex-col gap-1">
+            {variants.map((item) => (
+              <li key={item.catalog_id}>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="variant"
+                    data-testid={`variant-${item.catalog_id}`}
+                    checked={item.catalog_id === props.checkpointCatalogId}
+                    onChange={() => props.onCheckpoint(item.catalog_id)}
+                  />
+                  <span className="font-mono">{item.catalog_id}</span>
+                  <span className="text-xs text-text-secondary">
+                    {item.variant}
+                    {item.offered ? "" : " — not offered yet"}
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
         {!props.fromScratch && (
           <input
             type="text"
@@ -666,11 +744,25 @@ function ConfigureStep(props: ConfigureStepProps) {
             className="rounded-md border border-border bg-bg px-3 py-2 text-sm font-mono"
           />
         )}
+        {!props.fromScratch && selected && (
+          <LicenceCard
+            variant={selected}
+            accepted={selected.licence_accepted}
+            busy={acceptBusy}
+            error={acceptError}
+            onAccept={() => void acceptLicence(selected.catalog_id)}
+          />
+        )}
+        {blocked && gateMessage && (
+          <p role="alert" data-testid="licence-block" className="rounded-md border border-warning bg-warning/10 p-2 text-xs text-warning">
+            {gateMessage}
+          </p>
+        )}
       </fieldset>
 
       <div className="flex gap-2">
         <button type="button" onClick={props.onBack} className="rounded-md border border-border px-4 py-2 text-sm hover:bg-bg">← Back</button>
-        <button type="button" data-testid="configure-next" onClick={props.onNext} className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover">Next →</button>
+        <button type="button" data-testid="configure-next" onClick={props.onNext} disabled={blocked} className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50">Next →</button>
       </div>
     </div>
   );
@@ -686,6 +778,7 @@ interface TrainStepProps {
   checkpointCatalogId: string | null;
   fromScratch: boolean;
   starting: boolean;
+  licenceBlock: string | null;
   onStart: () => void;
   onBack: () => void;
 }
@@ -711,10 +804,13 @@ function TrainStep(props: TrainStepProps) {
       </div>
       <div className="flex gap-2">
         <button type="button" onClick={props.onBack} className="rounded-md border border-border px-4 py-2 text-sm hover:bg-bg">← Back</button>
-        <button type="button" data-testid="start-training" onClick={props.onStart} disabled={props.starting} className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50">
+        <button type="button" data-testid="start-training" onClick={props.onStart} disabled={props.starting || props.licenceBlock !== null} className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50">
           {props.starting ? "Starting…" : "Start Training"}
         </button>
       </div>
+      {props.licenceBlock && (
+        <p role="alert" className="text-xs text-warning">{props.licenceBlock}</p>
+      )}
     </div>
   );
 }

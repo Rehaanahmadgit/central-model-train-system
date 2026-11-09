@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
+import { needsVerifyChip, weightsLicenceLabel, type WeightsLicence } from "../lib/licence";
 
 interface CheckpointItem {
   catalog_id: string;
@@ -10,6 +11,11 @@ interface CheckpointItem {
   size_bytes: number;
   last_used_at: string | null;
   license: string;
+  variant?: string;
+  offered?: boolean;
+  licence_accepted?: boolean;
+  code_license?: { spdx: string | null; url: string | null };
+  weights_license?: WeightsLicence;
 }
 
 interface CheckpointsResponse {
@@ -66,13 +72,14 @@ export function CheckpointsPage() {
               <th className="p-3">Local</th>
               <th className="p-3">Size</th>
               <th className="p-3">Last used</th>
+              <th className="p-3">Variant</th>
               <th className="p-3">License</th>
             </tr>
           </thead>
           <tbody>
             {items.length === 0 && (
               <tr>
-                <td colSpan={6} className="p-6 text-center text-text-secondary">
+                <td colSpan={7} className="p-6 text-center text-text-secondary">
                   No checkpoints in the catalog yet.
                 </td>
               </tr>
@@ -94,7 +101,28 @@ export function CheckpointsPage() {
                 <td className="p-3 font-mono">
                   {item.last_used_at ? new Date(item.last_used_at).toLocaleString() : "—"}
                 </td>
-                <td className="p-3 font-mono">{item.license || "—"}</td>
+                <td className="p-3 font-mono">
+                  {item.variant || "—"}
+                  {item.offered === false && (
+                    <span className="ml-2 rounded-full bg-warning/10 px-2 py-0.5 text-xs text-warning">
+                      not offered yet
+                    </span>
+                  )}
+                </td>
+                <td className="p-3 font-mono">
+                  code {item.code_license?.spdx ?? "not found"} · weights{" "}
+                  {item.weights_license ? weightsLicenceLabel(item.weights_license) : "—"}
+                  {item.weights_license && needsVerifyChip(item.weights_license) && (
+                    <span className="ml-2 rounded-full bg-warning/10 px-2 py-0.5 text-xs font-semibold text-warning">
+                      VERIFY
+                    </span>
+                  )}
+                  {item.licence_accepted && (
+                    <span className="ml-2 rounded-full bg-success/10 px-2 py-0.5 text-xs text-success">
+                      accepted
+                    </span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
