@@ -1,46 +1,76 @@
 {
  "best": {
-  "epoch": 1,
+  "epoch": 8,
   "metric": "val/mAP50",
-  "value": 0.0
+  "value": 0.7
  },
  "config": {
   "amp": false,
-  "batch_size": 2,
+  "batch_size": 1,
   "dev_preset": true,
-  "epochs": 2,
-  "freeze_backbone": true,
+  "epochs": 8,
+  "freeze_backbone": false,
   "imgsz": 128,
-  "lr": 0.0001,
+  "lr": 0.001,
   "score_threshold": 0.25
  },
  "epochs": [
   {
    "epoch": 1,
-   "train_loss": 30.025932788848877,
+   "train_loss": 29.066797733306885,
    "val_map50": 0.0
   },
   {
    "epoch": 2,
-   "train_loss": 28.736795902252197,
-   "val_map50": 0.0
+   "train_loss": 24.95034670829773,
+   "val_map50": 0.0012360939431396785
+  },
+  {
+   "epoch": 3,
+   "train_loss": 22.04874324798584,
+   "val_map50": 0.35
+  },
+  {
+   "epoch": 4,
+   "train_loss": 21.522588968276978,
+   "val_map50": 0.16666666666666666
+  },
+  {
+   "epoch": 5,
+   "train_loss": 20.496320247650146,
+   "val_map50": 0.5227272727272727
+  },
+  {
+   "epoch": 6,
+   "train_loss": 18.878546476364136,
+   "val_map50": 0.532258064516129
+  },
+  {
+   "epoch": 7,
+   "train_loss": 18.89787185192108,
+   "val_map50": 0.6428571428571428
+  },
+  {
+   "epoch": 8,
+   "train_loss": 17.808470010757446,
+   "val_map50": 0.7
   }
  ],
  "evaluation": {
   "test": {
-   "mAP50": 0.0,
+   "mAP50": 0.725,
    "per_class_AP": {
-    "cat": 0.0,
-    "dog": 0.0
+    "cat": 0.45,
+    "dog": 1.0
    },
    "samples": 3,
    "warning": "only 3 images: mAP50 will swing a lot between epochs and runs"
   },
   "val": {
-   "mAP50": 0.0,
+   "mAP50": 0.7,
    "per_class_AP": {
-    "cat": 0.0,
-    "dog": 0.0
+    "cat": 0.4,
+    "dog": 1.0
    },
    "samples": 4,
    "warning": "only 4 images: mAP50 will swing a lot between epochs and runs"
@@ -51,7 +81,7 @@
    "test": 3,
    "val": 4
   },
-  "sum_error_score": 7
+  "sum_error_score": 8
  },
  "seed": 42,
  "splits": {

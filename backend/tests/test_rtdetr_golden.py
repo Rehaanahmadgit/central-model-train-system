@@ -13,9 +13,14 @@ Tolerances (DECISIONS D129):
   * per-class AP: absolute 0.05
 
 The fixture is 8 train / 4 val / 3 test with a class-specific blob, fixed config
-(dev_preset, imgsz 128, batch 2, 2 epochs, seed 42) and CPU only. With two epochs
-from a random head mAP50 stays 0.0 — record is honest about that; the loss curve,
-the split membership and the prediction counts are what guard a refactor today.
+(dev_preset, imgsz 128, batch 1, 8 epochs, lr 1e-3, backbone unfrozen, seed 42)
+and CPU only, ~40 s. This config is chosen so the metric actually moves
+(measured 2026-11-09, sweep on this fixture): frozen backbone / lr 1e-4 / batch 2
+left mAP50 at ~0.005; lr 2e-3 was unstable (mAP bounced 0.0-0.17); lr 5e-4 gave
+0.54; lr 1e-3 with batch 1 (64 optimizer steps) climbs almost monotonically to
+val mAP50 0.70 / test 0.725. So a mAP regression, not just a loss drift, fails
+the golden. The fixture is tiny, hence the numbers are a regression guard, not
+a quality claim.
 """
 
 from __future__ import annotations
@@ -38,11 +43,13 @@ GOLDEN_PATH = Path(__file__).with_name("golden") / "rtdetr_dev_preset.json"
 UPDATE = os.environ.get("TRAINHUB_UPDATE_GOLDEN") == "1"
 
 CONFIG: dict[str, Any] = {
-    "epochs": 2,
-    "batch_size": 2,
+    "epochs": 8,
+    "batch_size": 1,
     "imgsz": 128,
-    "lr": 1e-4,
-    "freeze_backbone": True,
+    # lr 1e-3 + batch 1 + unfrozen backbone is what makes this fixture learn in a CPU
+    # budget (see the module docstring); production defaults are untouched.
+    "lr": 1e-3,
+    "freeze_backbone": False,
     "amp": False,
     "dev_preset": True,
     "score_threshold": 0.25,
