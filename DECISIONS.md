@@ -187,3 +187,11 @@ Every decision with date, reason, source doc section. `PENDING` = proposed, awai
 | D132 | Golden fixture config is now batch 1, 8 epochs, lr 1e-3, backbone unfrozen (production defaults untouched). Sweep on this fixture: lr 1e-4/batch 2 → mAP50 ~0.005; lr 2e-3 unstable (0.0–0.17); lr 5e-4 → 0.54; lr 1e-3/batch 1 → val 0.70 / test 0.725, ~40 s CPU. Supersedes D131. | measured 2026-11-09 | active |
 | D133 | `backend/app/training/engine.py` owns the epoch loop, pause/stop, NaN/inf guard, best tracking (strict `>`), checkpoint save/load, exact resume and metric emit; `rtdetr.py` delegates via `EngineHooks`. `cnn.py` untouched. Golden passed unchanged. | A2 | active |
 | D134 | Engine updates best-so-far BEFORE saving the checkpoint (old code saved the stale value, so resuming from `last.ckpt` forgot the epoch it had just finished and could overwrite `best.ckpt` with a worse model). Only checkpoint contents change, not metrics. | found while extracting | active |
+
+## 2026-11-09 — Slice B: verification honesty
+| # | Decision | Reason / source | status |
+|---|---|---|---|
+| D135 | `empty_labels` returns severity **error** (fail, `can_train=false`) when a detection dataset has zero boxes in every image; a few empty images stay a **warn** (background images). | Training on no boxes "succeeds" with mAP 0 | active |
+| D136 | `corrupt_files` decodes every image (sorted, deterministic), ignoring `sample_cap`; above `FULL_SCAN_LIMIT` (50 000) it checks a path-hash-ordered sample and the hint says so. | Old code checked only the first `sample_cap` in filesystem order, so a corrupt file past the cap passed | active |
+| D137 | New warn check `box_geometry`: per-split counts of boxes with area < 0.1% of the image and boxes outside [0,1]. COCO boxes are clipped by the manifest, so out-of-range is only visible for YOLO. | Slice B item 4 | active |
+| D138 | `CheckList` shows `Fix: <hint>` inline (one line) for fail/warn rows; `VERIFIER_VERSION` 1.2.0 (invalidates cached reports; 24 checks). | Slice B item 3 | active |

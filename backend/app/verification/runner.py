@@ -28,6 +28,7 @@ from app.verification.checks.compat import (
 from app.verification.checks.content import CorruptFilesCheck, LabelValidityCheck
 from app.verification.checks.format_supported import FormatSupportedCheck, detect_format
 from app.verification.checks.quality import (
+    BoxGeometryCheck,
     ClassNamesConsistentCheck,
     DuplicateFilesCheck,
     EmptyLabelsCheck,
@@ -74,6 +75,7 @@ def build_checks(limits: TreeLimits | None = None) -> list[Check]:
         LabelFilePairingCheck(),
         LabelValidityCheck(),
         EmptyLabelsCheck(),
+        BoxGeometryCheck(),
         DuplicateFilesCheck(),
         LeakageBetweenSplitsCheck(),
         ClassNamesConsistentCheck(),
@@ -227,8 +229,8 @@ def run_pipeline(
     )
     resolved_device = device or resolve_device("auto")
     # "auto" means: use the CPU dev preset unless a GPU is actually available [doc 14 §3.3].
-    resolved_preset = preset if preset in ("dev", "full") else (
-        "full" if resolved_device.is_gpu else "dev"
+    resolved_preset = (
+        preset if preset in ("dev", "full") else ("full" if resolved_device.is_gpu else "dev")
     )
     ctx.facts["preset"] = resolved_preset
     ctx.facts["preset_requested"] = preset

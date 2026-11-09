@@ -1,5 +1,6 @@
 """Content checks: corrupt files and label validity [doc 06 §4]."""
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -24,6 +25,16 @@ def _decode_image(path: Path) -> str | None:
     return None
 
 
+# Every image is decoded up to this many; beyond it a deterministic, path-hash
+# ordered sample is checked (and the message says so). It deliberately ignores
+# ``sample_cap`` (a stats cap): a corrupt file at position cap+N must not pass.
+FULL_SCAN_LIMIT = 50_000
+
+
+def _path_hash(path: Path, root: Path) -> str:
+    return hashlib.sha1(path.relative_to(root).as_posix().encode()).hexdigest()
+
+
 class CorruptFilesCheck(Check):
     """Images that fail decode or are zero-byte; lists the first N [doc 06 §4]."""
 
@@ -45,7 +56,11 @@ class CorruptFilesCheck(Check):
                 message="no image files to decode (tabular dataset)",
                 details={"checked": 0, "corrupt": 0},
             )
-        sampled = images[: ctx.sample_cap]
+        # rglob order is filesystem dependent: sort for a reproducible report.
+        images.sort(key=lambda path: path.relative_to(ctx.dataset_root).as_posix())
+        if len(images) > FULL_SCAN_LIMIT:
+            images.sort(key=lambda path: _path_hash(path, ctx.dataset_root))
+        sampled = images[:FULL_SCAN_LIMIT]
         with ThreadPoolExecutor(max_workers=8) as pool:
             outcomes = list(pool.map(_decode_image, sampled))
         corrupt = [
@@ -67,7 +82,10 @@ class CorruptFilesCheck(Check):
                 message=f"{len(corrupt)} of {len(sampled)} image files are corrupt",
                 details=details,
                 samples=corrupt[:10],
-                fix_hint="Remove or replace the corrupt files, then re-verify.",
+                fix_hint=(
+                    "Delete or re-export the listed files, then verify again"
+                    + (" (only a sample was checked)." if details["sampled"] else ".")
+                ),
             )
         return CheckResult(
             name=self.name,
@@ -206,8 +224,7 @@ class LabelValidityCheck(Check):
                 severity=self.severity,
                 status="fail",
                 message=(
-                    f"found {len(class_names)} class folder(s); "
-                    "classification needs at least 2"
+                    f"found {len(class_names)} class folder(s); classification needs at least 2"
                 ),
                 details={"classes": class_names},
                 fix_hint="Provide at least two non-empty class folders.",
@@ -379,9 +396,7 @@ class LabelValidityCheck(Check):
                     file_name = str(
                         image.get("file_name", image.get("id", annotation.get("image_id")))
                     )
-                    problems.append(
-                        f"{file_name}: bbox outside image bounds by {overshoot:.2f}px"
-                    )
+                    problems.append(f"{file_name}: bbox outside image bounds by {overshoot:.2f}px")
         ctx.facts["class_counts"] = class_counts
         ctx.facts["class_names"] = sorted(class_counts)
         details = {

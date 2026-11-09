@@ -151,3 +151,7 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 ## A1 + A2 (2026-11-09)
 - A1: golden now learns (val mAP50 0.70, test 0.725, ~40 s CPU); re-recorded, passes twice + determinism test (D132).
 - A2: `training/engine.py` extracted, `rtdetr.py` delegates; golden unchanged; `tests/test_engine.py` covers tie-keeps-earlier, nan/inf guard, stop, exact resume (D133, D134). `make verify` green (268 passed).
+
+## Slice B — verification honesty (2026-11-09)
+- Zero-box detection dataset now fails (`can_train=false`); few empties only warn. Full corrupt scan (test: corrupt file after `sample_cap` is found). New `box_geometry` warn. Inline fix hint in CheckList. VERIFIER_VERSION 1.2.0.
+- Tests: 5 new in `test_verification_checks.py`; Playwright `failed check shows message and fix hint inline` (3 wizard e2e passed against a local backend on :8091). `make verify` green (273 passed).

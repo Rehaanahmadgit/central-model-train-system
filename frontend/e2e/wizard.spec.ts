@@ -188,3 +188,47 @@ test("wizard prefills Configure from recommended_hparams and checkpoint", async 
   await expect(checkpoint).toHaveValue("rtdetr-r18vd@coco-1.0");
 });
 
+
+// A failed check must show its one-line message AND the "what to do" hint
+// inline, without expanding the row [Slice B]. (Only the REST report is mocked;
+// the Next-button gate comes from the live stream and is covered by backend tests.)
+test("failed check shows message and fix hint inline", async ({ page }) => {
+  await page.route("**/api/v1/verifications/*", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      json: {
+        id: "ver_mock_fail",
+        status: "failed",
+        can_train: false,
+        checks: [
+          {
+            name: "empty_labels",
+            status: "fail",
+            severity: "error",
+            message: "all 4 images have no boxes: nothing to train on",
+            details: {},
+            fix_hint: "Add annotations (YOLO: one 'class x y w h' line per object), then verify again.",
+            samples: ["images/img0.png"],
+          },
+        ],
+        derived: { task_type: "object_detection", format: "yolo" },
+      },
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "New training" }).click();
+  await page.locator("#dataset-file-input").setInputFiles({
+    name: "apple-orange.zip",
+    mimeType: "application/zip",
+    buffer: makeYoloZip(),
+  });
+  await page.getByTestId("model-rtdetr").click();
+  await page.getByTestId("start-verification").click();
+
+  const list = page.getByRole("list", { name: "Verification checks" });
+  await expect(list.getByText("all 4 images have no boxes: nothing to train on").first()).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect(page.getByTestId("check-hint-empty_labels")).toContainText("Add annotations");
+});

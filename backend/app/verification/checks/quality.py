@@ -7,6 +7,7 @@ is only walked once.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
@@ -43,9 +44,7 @@ class LabelFilePairingCheck(Check):
         if detected != "yolo":
             return self._pass(f"pairing not required for format {detected!r}")
 
-        missing_labels = [
-            row["path"] for row in summary.rows if row.get("annotation_path") is None
-        ]
+        missing_labels = [row["path"] for row in summary.rows if row.get("annotation_path") is None]
         root = ctx.dataset_root
         images = {_pairing_key(str(row["path"])) for row in summary.rows if summary.rows}
         orphan_labels: list[str] = []
@@ -80,9 +79,7 @@ class LabelFilePairingCheck(Check):
         )
 
     def _pass(self, message: str) -> CheckResult:
-        return CheckResult(
-            name=self.name, severity=self.severity, status="pass", message=message
-        )
+        return CheckResult(name=self.name, severity=self.severity, status="pass", message=message)
 
 
 class EmptyLabelsCheck(Check):
@@ -108,6 +105,20 @@ class EmptyLabelsCheck(Check):
             )
         empty = [row["path"] for row in summary.rows if not int(row.get("num_boxes") or 0)]
         share = 100 * len(empty) / len(summary.rows)
+        if empty and len(empty) == len(summary.rows) and task == "object_detection":
+            # Nothing to learn from: training would "succeed" with mAP 0. Block it.
+            return CheckResult(
+                name=self.name,
+                severity="error",
+                status="fail",
+                message=f"all {len(empty)} images have no boxes: nothing to train on",
+                details={"empty": len(empty), "share_pct": 100.0},
+                samples=empty[:10],
+                fix_hint=(
+                    "Add annotations (YOLO: one 'class x y w h' line per object in labels/*.txt; "
+                    "COCO: entries under 'annotations'), then verify again."
+                ),
+            )
         if empty:
             return CheckResult(
                 name=self.name,
@@ -123,6 +134,82 @@ class EmptyLabelsCheck(Check):
             severity=self.severity,
             status="pass",
             message="every image has at least one annotation",
+        )
+
+
+TINY_BOX_AREA = 0.001  # < 0.1% of the image area
+BOX_EPSILON = 1e-6
+
+
+class BoxGeometryCheck(Check):
+    """Very small or out-of-range boxes, counted per split [Slice B]."""
+
+    name = "box_geometry"
+    severity = "warn"
+    depends_on = ["format_supported", "required_files_present"]
+
+    def run(self, ctx: VerificationContext) -> CheckResult:
+        summary = _summary(ctx)
+        passed = CheckResult(
+            name=self.name,
+            severity=self.severity,
+            status="pass",
+            message="no tiny or out-of-range boxes",
+        )
+        if summary is None or ctx.facts.get("task_type") != "object_detection":
+            return passed
+        per_split: dict[str, dict[str, int]] = {}
+        offenders: list[str] = []
+        for row in summary.rows:
+            raw = row.get("boxes")
+            if not raw:
+                continue
+            counts = per_split.setdefault(
+                str(row.get("split")), {"boxes": 0, "tiny": 0, "out_of_range": 0}
+            )
+            bad = False
+            for box in json.loads(raw):
+                cx, cy, w, h = (float(value) for value in box[1:5])
+                counts["boxes"] += 1
+                if w * h < TINY_BOX_AREA:
+                    counts["tiny"] += 1
+                    bad = True
+                if (
+                    cx - w / 2 < -BOX_EPSILON
+                    or cy - h / 2 < -BOX_EPSILON
+                    or cx + w / 2 > 1 + BOX_EPSILON
+                    or cy + h / 2 > 1 + BOX_EPSILON
+                ):
+                    counts["out_of_range"] += 1
+                    bad = True
+            if bad:
+                offenders.append(str(row["path"]))
+        flagged = {
+            split: counts
+            for split, counts in sorted(per_split.items())
+            if counts["tiny"] or counts["out_of_range"]
+        }
+        if not flagged:
+            return passed
+        parts = []
+        for split, counts in flagged.items():
+            bits = []
+            if counts["tiny"]:
+                bits.append(f"{counts['tiny']} tiny (<0.1% area)")
+            if counts["out_of_range"]:
+                bits.append(f"{counts['out_of_range']} out of range")
+            parts.append(f"{split}: {', '.join(bits)} of {counts['boxes']}")
+        return CheckResult(
+            name=self.name,
+            severity=self.severity,
+            status="warn",
+            message="boxes to review - " + "; ".join(parts),
+            details={"per_split": per_split},
+            samples=offenders[:10],
+            fix_hint=(
+                "Tiny boxes need a larger imgsz; out-of-range boxes are clipped - "
+                "fix the labels if they are wrong."
+            ),
         )
 
 

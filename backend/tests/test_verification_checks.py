@@ -212,6 +212,7 @@ EXPECTED_CHECKS = [
     "label_file_pairing",
     "label_validity",
     "empty_labels",
+    "box_geometry",
     "duplicate_files",
     "leakage_between_splits",
     "class_names_consistent",
@@ -290,3 +291,71 @@ def test_pipeline_derived_facts_and_manifest(tmp_path: Path) -> None:
     assert derived["recommended_hparams"]["batch_size"] >= 1
     assert derived["recommended_checkpoints"] == []
     assert derived["checkpoint_catalog_configured"] is False
+
+
+def _pipeline(raw: Path, sample_cap: int = 100) -> dict:
+    return run_pipeline(
+        raw,
+        "a" * 64,
+        "rtdetr",
+        None,
+        sample_cap=sample_cap,
+        check_timeout_seconds=30,
+        progress=lambda event: None,
+    )
+
+
+def _check(outcome: dict, name: str) -> dict:
+    return next(check for check in outcome["checks"] if check["name"] == name)
+
+
+def test_corrupt_file_beyond_sample_cap_is_detected(tmp_path: Path) -> None:
+    raw = make_yolo_dataset(tmp_path)  # img0..img3
+    (raw / "images" / "img3.png").write_bytes(b"not an image")  # last in order
+    ctx = _ctx(raw)
+    ctx.sample_cap = 2  # cap smaller than the corrupt file's position
+    FormatSupportedCheck().run(ctx)
+    result = CorruptFilesCheck().run(ctx)
+    assert result.status == "fail"
+    assert result.samples == ["images/img3.png"]
+    assert result.details["checked"] == 4
+
+
+def test_all_empty_labels_blocks_training(tmp_path: Path) -> None:
+    raw = make_yolo_dataset(tmp_path)
+    for label in (raw / "labels").glob("*.txt"):
+        label.write_text("")
+    outcome = _pipeline(raw)
+    empty = _check(outcome, "empty_labels")
+    assert empty["status"] == "fail" and empty["severity"] == "error"
+    assert "all 4 images have no boxes" in empty["message"]
+    assert empty["fix_hint"]
+    assert outcome["status"] == "failed"
+    assert outcome["can_train"] is False
+
+
+def test_a_few_empty_labels_only_warn(tmp_path: Path) -> None:
+    raw = materialize(tmp_path / "raw", build_yolo())
+    first_label = sorted(raw.rglob("labels/*.txt"))[0]
+    first_label.write_text("")
+    outcome = _pipeline(raw)
+    empty = _check(outcome, "empty_labels")
+    assert empty["status"] == "warn" and empty["severity"] == "warn"
+    assert outcome["can_train"] is True
+
+
+def test_box_geometry_warns_with_per_split_counts(tmp_path: Path) -> None:
+    raw = make_yolo_dataset(tmp_path)
+    (raw / "labels" / "img0.txt").write_text("0 0.5 0.5 0.01 0.01\n")  # area 1e-4
+    (raw / "labels" / "img1.txt").write_text("0 0.95 0.5 0.2 0.2\n")  # pokes out of the image
+    outcome = _pipeline(raw)
+    geometry = _check(outcome, "box_geometry")
+    assert geometry["status"] == "warn" and geometry["severity"] == "warn"
+    counts = geometry["details"]["per_split"]["unspecified"]
+    assert counts["tiny"] == 1 and counts["out_of_range"] == 1 and counts["boxes"] == 4
+    assert "1 tiny" in geometry["message"] and "1 out of range" in geometry["message"]
+
+
+def test_box_geometry_passes_normal_boxes(tmp_path: Path) -> None:
+    outcome = _pipeline(make_yolo_dataset(tmp_path))
+    assert _check(outcome, "box_geometry")["status"] == "pass"

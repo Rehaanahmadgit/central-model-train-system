@@ -60,6 +60,17 @@ export function CheckList({ checks }: CheckListProps) {
                 )}
               </div>
             </details>
+            {/* What to do next, visible without expanding the row. */}
+            {(check.status === "fail" || check.status === "warn") && check.fix_hint && (
+              <p
+                data-testid={`check-hint-${check.name}`}
+                className="mt-1 truncate pl-6 text-xs text-text"
+                title={check.fix_hint}
+              >
+                <span className="font-semibold">Fix: </span>
+                {check.fix_hint}
+              </p>
+            )}
           </li>
         );
       })}

@@ -52,10 +52,10 @@ def test_verification_full_flow_passes(client: TestClient, home: Path) -> None:
     assert body["status"] == "passed_with_warnings"
     assert body["can_train"] is True
     assert body["cached"] is False
-    assert body["verifier_version"] == "1.1.0"
+    assert body["verifier_version"] == "1.2.0"
     assert body["finished_at"] is not None
     names = [check["name"] for check in body["checks"]]
-    assert len(names) == 23
+    assert len(names) == 24
     assert names[0] == "archive_integrity"
     assert names[-1] == "resource_estimate"
     assert {"label_file_pairing", "leakage_between_splits", "min_samples_per_class"} <= set(names)
@@ -75,8 +75,8 @@ def test_verification_full_flow_passes(client: TestClient, home: Path) -> None:
 
     checks_file = home / "verifications" / verification_id / "checks.jsonl"
     records = list(read_jsonl(checks_file))
-    assert len(records) == 23
-    assert [record["seq"] for record in records] == list(range(1, 24))
+    assert len(records) == 24
+    assert [record["seq"] for record in records] == list(range(1, 25))
 
 
 def test_verification_fails_on_corrupt_dataset(client: TestClient) -> None:
@@ -169,7 +169,7 @@ def test_verification_checks_endpoint(client: TestClient) -> None:
     ).json()["id"]
     _wait_for_verification(client, verification_id)
     body = client.get(f"/api/v1/verifications/{verification_id}/checks").json()
-    assert len(body["checks"]) == 23
+    assert len(body["checks"]) == 24
 
 
 def test_verification_ws_streams_checks(client: TestClient) -> None:
@@ -197,7 +197,7 @@ def test_verification_ws_streams_checks(client: TestClient) -> None:
                 break
         assert "check_started" in types
         assert {"archive_integrity", "format_supported", "corrupt_files", "label_validity"} <= names
-        assert len(names) == 23
+        assert len(names) == 24
 
 
 def test_verification_ws_on_finished_stream_closes(client: TestClient) -> None:
