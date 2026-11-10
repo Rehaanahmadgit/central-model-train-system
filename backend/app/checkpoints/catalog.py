@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +24,7 @@ import yaml
 DEFAULT_CATALOG = Path(__file__).with_name("default_catalog.yaml")
 PLACEHOLDER_PREFIX = "TODO(user)"
 ALLOWED_SOURCE_TYPES = ("url", "file")
+logger = logging.getLogger(__name__)
 
 
 def is_placeholder_sha(value: str | None) -> bool:
@@ -257,19 +259,67 @@ def ensure_catalog(home: Path) -> Path:
     return target
 
 
+_NESTED = ("code_license", "weights_license")
+_PLACEHOLDER_TEXT = "TODO(user)"
+
+
+def _entry_id(item: dict[str, Any]) -> str | None:
+    if not item.get("name") or not item.get("version"):
+        return None
+    return f"{item['name']}@{item['version']}"
+
+
+def _merge_override(base: dict[str, Any], override: dict[str, Any], origin: str) -> dict[str, Any]:
+    """Field-wise merge: the override changes only the fields it actually provides.
+
+    * a placeholder value ("TODO(user)...") is "not provided", never a replacement;
+    * the retired free-text ``license`` key is ignored for an entry the defaults
+      already describe (code_license/weights_license replaced it) [Slice E fix].
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        if key == "license":
+            logger.warning(
+                "%s: 'license' is retired (use code_license / weights_license); ignoring it for %s",
+                origin,
+                _entry_id(override),
+            )
+            continue
+        if isinstance(value, str) and value.strip().startswith(_PLACEHOLDER_TEXT):
+            logger.warning("%s: ignoring placeholder %s for %s", origin, key, _entry_id(override))
+            continue
+        if key in _NESTED and isinstance(value, dict) and isinstance(base.get(key), dict):
+            merged[key] = {**base[key], **value}
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_catalog(home: Path) -> list[CatalogEntry]:
-    """Defaults + override, override wins on the same ``name@version``."""
+    """Volume catalog, then the operator override merged field by field."""
     base_path, override_path = catalog_paths(home)
     if not base_path.is_file():
         ensure_catalog(home)
-    merged: dict[str, CatalogEntry] = {}
+    raw: dict[str, dict[str, Any]] = {}
+    origin: dict[str, str] = {}
     for path in (base_path, override_path):
         if not path.is_file():
             continue
         for item in _read_yaml(path):
-            entry = _parse_entry(item, path.name)
-            merged[entry.catalog_id] = entry
-    return [merged[key] for key in sorted(merged)]
+            key = _entry_id(item) or f"{path.name}#{len(raw)}"
+            if path == override_path and key in raw:
+                raw[key] = _merge_override(raw[key], item, path.name)
+            elif path == override_path and "license" in item and "code_license" not in item:
+                # New custom entry written with the old schema: keep it, say so.
+                logger.warning("%s: %s uses the retired 'license' key", path.name, key)
+                raw[key] = item
+                origin[key] = path.name
+            else:
+                raw[key] = item
+                origin[key] = path.name
+    merged = {key: _parse_entry(item, origin.get(key, "catalog")) for key, item in raw.items()}
+    entries = {entry.catalog_id: entry for entry in merged.values()}
+    return [entries[key] for key in sorted(entries)]
 
 
 def find_entry(entries: list[CatalogEntry], catalog_id: str) -> CatalogEntry | None:

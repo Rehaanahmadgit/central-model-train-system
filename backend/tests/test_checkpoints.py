@@ -659,3 +659,60 @@ def test_run_start_failure_matrix_fake_resolver(
     assert body["failure"]["can_import"] is True
     assert body["failure"]["catalog_id"] == "tiny-model@1.0"
     assert f"fake {raised}" in body["failure"]["details"]
+
+
+# --- override merge (field-wise) ---------------------------------------------
+
+
+def test_old_style_override_keeps_default_licence_fields(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Old override (only a TODO 'license') must not wipe the default entry's fields."""
+    from app.checkpoints.catalog import catalog_paths, find_entry
+
+    ensure_catalog(tmp_path)
+    _, override = catalog_paths(tmp_path)
+    override.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "rtdetr-r18vd",
+                    "version": "coco-1.0",
+                    "license": "TODO(user): provide the license",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with caplog.at_level("WARNING"):
+        entry = find_entry(load_catalog(tmp_path), "rtdetr-r18vd@coco-1.0")
+    assert entry is not None
+    assert entry.code_license["spdx"] == "Apache-2.0"
+    assert entry.offered is True and entry.sha256 == R18VD_SHA
+    assert "retired" in caplog.text
+
+
+def test_override_changes_only_the_fields_it_gives(tmp_path: Path) -> None:
+    from app.checkpoints.catalog import catalog_paths, find_entry
+
+    ensure_catalog(tmp_path)
+    _, override = catalog_paths(tmp_path)
+    override.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "rtdetr-r18vd",
+                    "version": "coco-1.0",
+                    "min_vram_gb": 3,
+                    "weights_license": {"spdx": "Apache-2.0", "verified": True},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    entry = find_entry(load_catalog(tmp_path), "rtdetr-r18vd@coco-1.0")
+    assert entry is not None
+    assert entry.min_vram_gb == 3
+    assert entry.weights_license["spdx"] == "Apache-2.0" and entry.weights_license["verified"]
+    assert entry.weights_license["url"], "url comes from the default"
+    assert entry.code_license["spdx"] == "Apache-2.0" and entry.size_bytes == 81001853
