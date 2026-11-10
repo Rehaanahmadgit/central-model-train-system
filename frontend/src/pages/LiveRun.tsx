@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { apiFetch, getAccessToken } from "../lib/api";
+import { apiFetch, apiUploadFile, getAccessToken } from "../lib/api";
+import { failureView, waitingLabel, type RunFailure, type Waiting } from "../lib/pretrained";
 import { ConnectionIndicator } from "../components/ConnectionIndicator";
 import { MetricChart } from "../components/MetricChart";
 import { PredictionGallery } from "../components/PredictionGallery";
@@ -37,7 +38,8 @@ interface RunInfo {
   started_at: string | null;
   finished_at: string | null;
   best: { metric?: string | null; value?: number; epoch?: number };
-  failure?: { reason?: string | null; details?: string | null } | null;
+  failure?: RunFailure | null;
+  waiting_for?: Waiting | null;
 }
 
 const FAILURE_HINTS: Record<string, string> = {
@@ -45,6 +47,7 @@ const FAILURE_HINTS: Record<string, string> = {
   OOM: "Out of memory. Reduce the batch size (or imgsz) in Configure and retry.",
   NAN_LOSS: "Loss became NaN/Inf. Lower the learning rate, check the data for corrupt values, then retry.",
   DATA_ERROR: "The dataset or configuration is invalid. Read the message, fix it, and re-run verification.",
+  GPU_UNAVAILABLE: "This run needs a GPU and none is visible. Use the dev preset on CPU, or start the container with --gpus all.",
   UNKNOWN: "An unexpected error occurred. See the run log for the traceback.",
 };
 
@@ -116,6 +119,21 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
       disposed = true;
     };
   }, [runId, stream.runState]);
+
+  // While the run waits for its checkpoint (download progress) refetch every second.
+  useEffect(() => {
+    if ((stream.runState ?? info?.state) !== "preparing") return;
+    let disposed = false;
+    const timer = window.setInterval(() => {
+      apiFetch<RunInfo>(`/api/v1/runs/${runId}`)
+        .then((body) => !disposed && setInfo(body))
+        .catch(() => undefined);
+    }, 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [runId, stream.runState, info?.state]);
 
   // "Best" lives in run.json only after the worker's result event. When that
   // never arrived (placeholder {metric: null}) the finished run showed "—"
@@ -193,6 +211,22 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
       }),
     [stream.logs, logQuery, logLevel],
   );
+
+  const [importMsg, setImportMsg] = useState<string | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+
+  async function importFromFile(file: File, catalogId: string): Promise<void> {
+    setImportBusy(true);
+    setImportMsg(null);
+    try {
+      await apiUploadFile(`/api/v1/checkpoints/${encodeURIComponent(catalogId)}/import`, file);
+      setImportMsg("Imported and sha256-verified. Press Run again to start with it.");
+    } catch (exc) {
+      setImportMsg(exc instanceof Error ? exc.message : "Import failed.");
+    } finally {
+      setImportBusy(false);
+    }
+  }
 
   async function control(action: "pause" | "resume" | "stop"): Promise<void> {
     await apiFetch<unknown>(`/api/v1/runs/${runId}/${action}`, { method: "POST" });
@@ -327,6 +361,23 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
       </div>
 
       {loadError && <p role="alert" className="rounded-md border border-danger bg-surface p-3 text-sm text-danger">{loadError}</p>}
+
+      {state === "preparing" && waitingLabel(info?.waiting_for) && (
+        <div data-testid="waiting-checkpoint" className="rounded-lg border border-border bg-surface p-4 text-sm">
+          <div className="font-medium">{waitingLabel(info?.waiting_for)}</div>
+          {typeof info?.waiting_for?.percent === "number" && (
+            <div
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(info.waiting_for.percent)}
+              className="mt-2 h-2 w-full overflow-hidden rounded-full bg-bg"
+            >
+              <div className="h-full bg-accent" style={{ width: `${info.waiting_for.percent}%` }} />
+            </div>
+          )}
+        </div>
+      )}
 
       {terminal && (
         <div data-testid="run-finished" className="flex flex-wrap items-center gap-4 rounded-lg border border-border bg-surface p-4">
@@ -489,11 +540,35 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
                 </div>
               ))}
               {info.failure?.reason && (
-                <div className="mt-2 rounded-md border border-danger p-2 text-danger">
-                  <div className="font-semibold">Failure: {info.failure.reason}</div>
-                  <div className="mt-1 text-xs text-text-secondary">
-                    {FAILURE_HINTS[info.failure.reason] ?? "See the run log for details."}
+                <div data-testid="run-failure" className="mt-2 rounded-md border border-danger p-2 text-danger">
+                  <div className="font-semibold">
+                    Failure: {failureView(info.failure)?.title ?? info.failure.reason}
                   </div>
+                  <div className="mt-1 text-xs text-text-secondary">
+                    {failureView(info.failure)?.hint ??
+                      FAILURE_HINTS[info.failure.reason] ??
+                      "See the run log for details."}
+                  </div>
+                  {failureView(info.failure)?.canImport && info.failure.catalog_id && (
+                    <label className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text">
+                      <span className="rounded-md border border-border px-3 py-1.5 font-medium">
+                        {importBusy ? "Importing…" : "Import from file"}
+                      </span>
+                      <input
+                        type="file"
+                        data-testid="import-from-file"
+                        disabled={importBusy}
+                        className="max-w-[16rem] text-xs"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          if (file && info.failure?.catalog_id) {
+                            void importFromFile(file, info.failure.catalog_id);
+                          }
+                        }}
+                      />
+                    </label>
+                  )}
+                  {importMsg && <div role="status" className="mt-1 text-xs text-text">{importMsg}</div>}
                 </div>
               )}
             </dl>

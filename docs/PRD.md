@@ -14,8 +14,9 @@ Hard constraints: no database (files under `TRAINHUB_HOME`), no user information
 | FR-04 | Pick model family; variants shown with licence card; accept before use | tested | Slice C (`718761b`), `test_licences.py`, `licence-logic.spec.ts` |
 | FR-05 | Server-side licence gate: resolver returns 409 `LICENCE_NOT_ACCEPTED` | tested | `test_licences.py` |
 | FR-06 | Checkpoint download once, sha256 verified, FileLock, `.part` resume, `weights_only=True` load | tested | S7 resolver tests |
-| FR-07 | Best-checkpoint auto-select with reason (hard filters) | planned | Slice D |
-| FR-08 | Auto-download on run start with waiting state, clear failures, "Import from file" | planned | Slice D |
+| FR-07 | Best-checkpoint auto-select with reason; hard filters: task, family, class head, VRAM ≤ GPU memory (min_vram 0 ⇒ warning), licence acceptable, verified sha256 (TODO(user) never auto-selected); user can override | tested | Slice D, `test_verification_cache.py`, `wizard.spec.ts`, `pretrained-logic.spec.ts` |
+| FR-08 | Auto-download on run start (resolver, FileLock, `.part` resume), run shows "waiting: checkpoint" + progress; failures (offline, sha mismatch without retry loop, disk full size×1.5, partial, concurrent) give a clear message and "Import from file"; unaccepted licence = 409 at run create | tested | Slice D, `test_checkpoints.py` (fake resolver + real local HTTP server); UI progress/Import button NOT RUN against a real download |
+| FR-19 | Frozen backbone without pretrained weights is blocked (API 400 `FROZEN_BACKBONE_NEEDS_PRETRAINED`, Configure Next and Start disabled with a red message) | tested | Slice D, `test_checkpoints.py`, `wizard.spec.ts` |
 | FR-09 | RT-DETR r18vd training on GPU, val/test evaluation, best checkpoint | verified | user run: apple-orange val mAP50 0.873 / test 0.825 |
 | FR-10 | Predictions tab (GT vs predictions, worst samples, confidence filter) | verified | user ran it; `predictions-logic.spec.ts` |
 | FR-11 | Weights download (`weights.pth`) | verified | user ran it |

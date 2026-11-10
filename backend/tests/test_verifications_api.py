@@ -52,7 +52,7 @@ def test_verification_full_flow_passes(client: TestClient, home: Path) -> None:
     assert body["status"] == "passed_with_warnings"
     assert body["can_train"] is True
     assert body["cached"] is False
-    assert body["verifier_version"] == "1.2.0"
+    assert body["verifier_version"] == "1.3.0"
     assert body["finished_at"] is not None
     names = [check["name"] for check in body["checks"]]
     assert len(names) == 24

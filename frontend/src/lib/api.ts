@@ -54,6 +54,20 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   return (await response.json()) as T;
 }
 
+/** PUT a file as the raw request body (used by "Import from file"). */
+export async function apiUploadFile<T>(path: string, file: File): Promise<T> {
+  const response = await fetch(path, {
+    method: "PUT",
+    headers: { ...authHeaders(), "Content-Type": "application/octet-stream" },
+    body: file,
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
+    throw new Error(body?.error?.message ?? `Upload failed (${response.status})`);
+  }
+  return (await response.json()) as T;
+}
+
 // WebSocket URL with the token as a query parameter [doc 05 §0: WS uses ?token=].
 export function wsUrl(path: string): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";

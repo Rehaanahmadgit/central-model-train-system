@@ -18,7 +18,8 @@ function formatSize(bytes: number | null | undefined): string {
 export function RecommendedCheckpoint({ derived }: Props) {
   if (!derived) return null;
   const candidates = derived.recommended_checkpoints ?? [];
-  const best = candidates[0];
+  const best = candidates.find((item) => item.catalog_id === derived.auto_selected) ?? candidates[0];
+  const autoPicked = Boolean(derived.auto_selected);
 
   if (!best) {
     return (
@@ -32,10 +33,20 @@ export function RecommendedCheckpoint({ derived }: Props) {
     );
   }
 
+  if (!autoPicked) {
+    return (
+      <div data-testid="no-auto-checkpoint" className="rounded-lg border border-dashed border-border bg-surface p-4 text-sm text-text-secondary">
+        <span className="font-medium text-text">Checkpoint:</span> none auto-selected.{" "}
+        {derived.auto_select_reason}. Pick one yourself in Configure, import weights from a file,
+        or train from scratch.
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-lg border border-border bg-surface p-4">
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="text-sm font-semibold">Recommended checkpoint</span>
+        <span className="text-sm font-semibold">Auto-selected checkpoint</span>
         <code className="rounded bg-bg px-1.5 py-0.5 font-mono text-xs">{best.catalog_id}</code>
         {best.local ? (
           <span className="text-xs font-semibold text-success">✓ cached locally</span>
@@ -46,8 +57,8 @@ export function RecommendedCheckpoint({ derived }: Props) {
         )}
       </div>
       <p className="mt-2 text-xs text-text-secondary">
-        <span className="font-semibold text-text">Why: </span>
-        {best.reason}
+        <span className="font-semibold text-text">Kyun chuna: </span>
+        <span data-testid="auto-select-reason">{derived.auto_select_reason ?? best.reason}</span>
       </p>
       <p className="mt-1 text-xs text-text-secondary">
         {best.downloadable
@@ -63,7 +74,10 @@ export function RecommendedCheckpoint({ derived }: Props) {
           <ul className="mt-1 space-y-1 text-xs text-text-secondary">
             {candidates.slice(1, 5).map((item) => (
               <li key={item.catalog_id}>
-                <code className="font-mono">{item.catalog_id}</code> — {item.reason}
+                <code className="font-mono">{item.catalog_id}</code> —{" "}
+                {item.eligible === false && item.rejected?.length
+                  ? `not auto-selected: ${item.rejected.join(", ")}`
+                  : item.reason}
               </li>
             ))}
           </ul>

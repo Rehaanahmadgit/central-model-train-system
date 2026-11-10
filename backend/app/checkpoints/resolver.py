@@ -19,7 +19,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -28,7 +29,7 @@ from typing import Any
 from app.checkpoints.catalog import CatalogEntry, find_entry, load_catalog
 from app.checkpoints.licences import LicenceStore
 from app.storage.atomic import atomic_write_json, read_json
-from app.storage.locks import FileLock
+from app.storage.locks import FileLock, LockTimeout
 
 INDEX_SCHEMA_VERSION = 1
 CHUNK = 1024 * 256
@@ -86,9 +87,7 @@ class CheckpointIndex:
         return entries if isinstance(entries, dict) else {}
 
     def write(self, entries: dict[str, dict[str, Any]]) -> None:
-        atomic_write_json(
-            self._path, {"schema_version": INDEX_SCHEMA_VERSION, "entries": entries}
-        )
+        atomic_write_json(self._path, {"schema_version": INDEX_SCHEMA_VERSION, "entries": entries})
 
     def get(self, catalog_id: str) -> dict[str, Any] | None:
         entry = self.read().get(catalog_id)
@@ -147,7 +146,7 @@ class CheckpointResolver:
             self._emit("cache_hit", entry, {"path": str(cached.path)})
             return cached
 
-        with self._checkpoint_lock(entry):
+        with self._acquire_with_wait_event(entry):
             # Another process may have finished while we waited [doc 07 §4.3b].
             cached = self._usable_from_cache(entry)
             if cached is not None:
@@ -200,6 +199,36 @@ class CheckpointResolver:
             source="import",
             filename=entry.resolved_filename,
         )
+
+    def import_stream(self, catalog_id: str, chunks: Iterable[bytes]) -> ResolvedCheckpoint:
+        """Import from an uploaded byte stream ("Import from file" in the UI).
+
+        Streams into ``.tmp`` (disk preflight first), verifies sha256, then moves into
+        the store. Never gated on the licence: it is the offline path.
+        """
+        entry = self._entry(catalog_id)
+        self._preflight(entry)
+        staging = self._tmp / f"{_safe_name(entry.catalog_id)}.{uuid.uuid4().hex}.upload"
+        limit = max(entry.size_bytes, 0) * 2 or None
+        written = 0
+        try:
+            with staging.open("wb") as handle:
+                for block in chunks:
+                    written += len(block)
+                    if limit is not None and written > limit:
+                        raise CheckpointError(
+                            "CHECKPOINT_IMPORT_TOO_LARGE",
+                            f"uploaded file is larger than expected for {catalog_id!r}",
+                            {"expected_bytes": entry.size_bytes},
+                        )
+                    handle.write(block)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if written == 0:
+                raise CheckpointError("CHECKPOINT_IMPORT_MISSING", "the uploaded file is empty", {})
+            return self.import_file(catalog_id, staging)
+        finally:
+            staging.unlink(missing_ok=True)
 
     def evict(self, catalog_id: str) -> bool:
         """Remove a cached file and its index entry [doc 05 §4]."""
@@ -260,6 +289,23 @@ class CheckpointResolver:
                 {"catalog_id": entry.catalog_id, "terms_sha256": entry.terms_sha256},
             )
 
+    @contextmanager
+    def _acquire_with_wait_event(self, entry: CatalogEntry) -> Iterator[None]:
+        """Take the per-checkpoint lock; say so when another downloader holds it."""
+        probe = FileLock(self._locks / f"{_safe_name(entry.catalog_id)}.lock", timeout=0.0)
+        try:
+            probe.acquire()
+        except LockTimeout:
+            self._emit("waiting_for_lock", entry, {})
+            lock = self._checkpoint_lock(entry)
+            with lock:
+                yield
+            return
+        try:
+            yield
+        finally:
+            probe.release()
+
     def _checkpoint_lock(self, entry: CatalogEntry) -> FileLock:
         """Per-catalog-id flock: one downloader, the rest wait [doc 07 §7]."""
         return FileLock(
@@ -316,13 +362,16 @@ class CheckpointResolver:
                 "CHECKPOINT_DISK_FULL",
                 (
                     f"not enough free disk for {entry.catalog_id!r}: "
-                    f"need {needed / 1e6:.0f} MB, have {usage.free / 1e6:.0f} MB"
+                    f"need {needed / 1e6:.0f} MB, have {usage.free / 1e6:.0f} MB. "
+                    "Free some space (Checkpoints page → evict) or use Import from file "
+                    "on a disk with room."
                 ),
-                {"needed_bytes": int(needed), "free_bytes": usage.free},
+                {"needed_bytes": int(needed), "free_bytes": usage.free, "can_import": True},
             )
 
     def _download(self, entry: CatalogEntry) -> Path:
-        part = self._tmp / f"{_safe_name(entry.catalog_id)}.{uuid.uuid4().hex}.part"
+        # Deterministic name: a later attempt resumes the same .part (Range) [doc 07 §4].
+        part = self._tmp / f"{_safe_name(entry.catalog_id)}.{str(entry.sha256)[:16]}.part"
         last_error: Exception | None = None
         for attempt in range(1, self._retries + 1):
             try:
@@ -334,18 +383,47 @@ class CheckpointResolver:
                     break
                 # Exponential backoff between retries [doc 07 §4.3d].
                 time.sleep(min(2 ** (attempt - 1), 8))
-        part.unlink(missing_ok=True)
+        # The .part is kept on purpose: the next attempt continues where this stopped.
+        offline = isinstance(last_error, urllib.error.URLError) and not isinstance(
+            last_error, urllib.error.HTTPError
+        )
+        have = part.stat().st_size if part.is_file() else 0
+        if offline:
+            code = "CHECKPOINT_OFFLINE"
+            message = (
+                f"cannot reach the download server for {entry.catalog_id!r} "
+                f"({getattr(last_error, 'reason', last_error)}). "
+                "No internet? Use Import from file with the weights downloaded elsewhere."
+            )
+        elif have:
+            code = "CHECKPOINT_PARTIAL"
+            message = (
+                f"download of {entry.catalog_id!r} stopped at {have} of "
+                f"{entry.size_bytes} bytes ({last_error}). Run again to resume, "
+                "or use Import from file."
+            )
+        else:
+            code = "CHECKPOINT_DOWNLOAD_FAILED"
+            message = (
+                f"could not download {entry.catalog_id!r}: {last_error}. "
+                "Try again, or use Import from file."
+            )
         raise CheckpointError(
-            "CHECKPOINT_DOWNLOAD_FAILED",
-            f"could not download {entry.catalog_id!r}: {last_error}",
-            {"catalog_id": entry.catalog_id, "attempts": self._retries},
+            code,
+            message,
+            {"catalog_id": entry.catalog_id, "attempts": self._retries, "can_import": True},
         )
 
     def _transfer(self, entry: CatalogEntry, part: Path) -> None:
         if entry.source_type == "file":
             self._copy_local(entry, part)
         else:
-            self._http_download(entry, part)
+            if part.is_file() and entry.size_bytes and part.stat().st_size > entry.size_bytes:
+                part.unlink()  # larger than expected: cannot be a valid prefix
+            if not (
+                part.is_file() and entry.size_bytes and part.stat().st_size == entry.size_bytes
+            ):
+                self._http_download(entry, part)
         if entry.size_bytes and part.stat().st_size < entry.size_bytes:
             raise OSError(
                 f"incomplete download ({part.stat().st_size} of {entry.size_bytes} bytes)"
@@ -355,8 +433,12 @@ class CheckpointResolver:
             part.unlink(missing_ok=True)
             raise CheckpointError(
                 "CHECKPOINT_SHA_MISMATCH",
-                f"sha256 mismatch after downloading {entry.catalog_id!r}",
-                {"expected": entry.sha256, "actual": digest},
+                (
+                    f"sha256 mismatch after downloading {entry.catalog_id!r}: the file is not "
+                    "the expected one and was discarded (not retried). Use Import from file "
+                    "with a copy you trust."
+                ),
+                {"expected": entry.sha256, "actual": digest, "can_import": True},
             )
 
     def _copy_local(self, entry: CatalogEntry, part: Path) -> None:
@@ -443,6 +525,5 @@ class CheckpointResolver:
 def _safe_name(catalog_id: str) -> str:
     """Filesystem-safe lock name; the catalog id is not a path [doc 10 §5]."""
     return "".join(
-        character if character.isalnum() or character in "-_." else "_"
-        for character in catalog_id
+        character if character.isalnum() or character in "-_." else "_" for character in catalog_id
     )

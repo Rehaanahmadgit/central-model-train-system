@@ -160,3 +160,9 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - Catalog schema extended; `rtdetr-r18vd@coco-1.0` offered with verified URL/sha256/size; others "not offered yet". New `checkpoints/licences.py`, `api/licences.py`, resolver gate, `/checkpoints` filters, `/models` variants, CLI `--accept-licence`.
 - UI: variant radio list + `LicenceCard` (code/weights licence, commercial flag, size, VRAM, links, VERIFY chip, "I accept"); gating on Configure Next / Start Training; Checkpoints page shows variant, VERIFY, accepted.
 - Tests: `test_licences.py` (new, 9), schema/offered tests in `test_checkpoints.py`; existing resolver-using tests now pre-accept. Playwright: `licence-logic.spec.ts` (5) + wizard licence flow (accept POST stubbed). `make verify` green (284 passed).
+
+## Slice D — auto-select + auto-download (2026-11-10)
+- docs baseline committed first (`0ef583d`).
+- Hard-filtered ranking + `auto_selected`/reason in the report; Configure pre-fills it and shows "kyun chuna"; override is acknowledged.
+- Run start: waiting state + progress, `.part` resume, FileLock wait event, precise failure codes, Import from file (API + UI), 409 for unaccepted licence at create, frozen-backbone guard (API + Wizard).
+- Tests: hard-filter + auto_select tests, failure matrix (offline, sha mismatch no retry, partial→resume, disk full 1.5×, lock wait, import, fake-resolver run failures), `pretrained-logic.spec.ts`, wizard e2e. NOT RUN: real GitHub download, GPU run, browser file upload to a real failed run.

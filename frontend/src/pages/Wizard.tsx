@@ -5,6 +5,7 @@ import { SummaryCards } from "../components/SummaryCards";
 import { RecommendedCheckpoint } from "../components/RecommendedCheckpoint";
 import { LicenceCard } from "../components/LicenceCard";
 import { licenceGate, type CatalogVariant } from "../lib/licence";
+import { autoSelection, frozenBackboneBlock, selectionSource } from "../lib/pretrained";
 import {
   coerceConfig,
   isNumericProperty,
@@ -65,6 +66,8 @@ export function Wizard({ onTrained, edit = null }: WizardProps) {
   const [runId, setRunId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [licenceBlock, setLicenceBlock] = useState<string | null>(null);
+  const [autoId, setAutoId] = useState<string | null>(null);
+  const [autoReason, setAutoReason] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
   // "Edit & run" from the Live Run page: jump straight to Configure with the
@@ -193,15 +196,14 @@ export function Wizard({ onTrained, edit = null }: WizardProps) {
             setVerificationId(id);
             setDerived(report);
             applyRecommendedHparams(report?.recommended_hparams, model.hparam_schema);
-            // Auto-fill the checkpoint box when a downloadable/cached entry is
-            // recommended; "Train from scratch" stays OFF [doc 06 §6, doc 07 §5].
-            const top = report?.recommended_checkpoints?.[0];
-            if (top && (top.downloadable || top.local)) {
-              setCheckpointCatalogId(top.catalog_id);
-              setFromScratch(false);
-            } else {
-              setCheckpointCatalogId(null);
-            }
+            // Pre-fill Configure with the verifier's auto-selected checkpoint (it passed
+            // every hard filter) and keep its reason; the user can still override it.
+            // "Train from scratch" stays OFF [Slice D].
+            const auto = autoSelection(report);
+            setAutoId(auto.catalogId);
+            setAutoReason(auto.reason);
+            setCheckpointCatalogId(auto.catalogId);
+            setFromScratch(false);
             setStep(3);
           }}
           onBack={() => setStep(1)}
@@ -217,6 +219,8 @@ export function Wizard({ onTrained, edit = null }: WizardProps) {
           fromScratch={fromScratch}
           onFromScratch={setFromScratch}
           onLicenceBlock={setLicenceBlock}
+          autoId={autoId}
+          autoReason={autoReason}
           onBack={() => setStep(2)}
           onNext={() => setStep(4)}
         />
@@ -231,6 +235,12 @@ export function Wizard({ onTrained, edit = null }: WizardProps) {
           fromScratch={fromScratch}
           starting={starting}
           licenceBlock={licenceBlock}
+          frozenBlock={frozenBackboneBlock(
+            "freeze_backbone" in propertiesOf(model.hparam_schema),
+            config,
+            checkpointCatalogId,
+            fromScratch,
+          )}
           onStart={() => void startTraining()}
           onBack={() => setStep(3)}
         />
@@ -597,6 +607,8 @@ interface ConfigureStepProps {
   fromScratch: boolean;
   onFromScratch: (value: boolean) => void;
   onLicenceBlock: (message: string | null) => void;
+  autoId: string | null;
+  autoReason: string;
   onBack: () => void;
   onNext: () => void;
 }
@@ -631,7 +643,15 @@ function ConfigureStep(props: ConfigureStepProps) {
     else if (variants === null) gateMessage = "Loading the model catalog…";
     else gateMessage = gate.message;
   }
-  const blocked = gateMessage !== null;
+  const frozenBlock = frozenBackboneBlock(
+    "freeze_backbone" in propertiesOf(model.hparam_schema),
+    config,
+    props.checkpointCatalogId,
+    props.fromScratch,
+  );
+  const blocked = gateMessage !== null || frozenBlock !== null;
+  if (gateMessage === null && frozenBlock !== null) gateMessage = frozenBlock;
+  const source = selectionSource(props.checkpointCatalogId, props.autoId, props.fromScratch);
   const { onLicenceBlock } = props;
   useEffect(() => {
     onLicenceBlock(blocked ? gateMessage : null);
@@ -744,6 +764,18 @@ function ConfigureStep(props: ConfigureStepProps) {
             className="rounded-md border border-border bg-bg px-3 py-2 text-sm font-mono"
           />
         )}
+        {source === "auto" && props.autoReason && (
+          <p data-testid="auto-reason" className="rounded-md bg-bg p-2 text-xs text-text-secondary">
+            <span className="font-semibold text-text">Auto-selected — kyun chuna: </span>
+            {props.autoReason}
+          </p>
+        )}
+        {source === "manual" && props.autoId && (
+          <p data-testid="manual-pick" className="text-xs text-text-secondary">
+            You overrode the auto-selected checkpoint
+            {` (${props.autoId})`}.
+          </p>
+        )}
         {!props.fromScratch && selected && (
           <LicenceCard
             variant={selected}
@@ -779,6 +811,7 @@ interface TrainStepProps {
   fromScratch: boolean;
   starting: boolean;
   licenceBlock: string | null;
+  frozenBlock: string | null;
   onStart: () => void;
   onBack: () => void;
 }
@@ -804,10 +837,15 @@ function TrainStep(props: TrainStepProps) {
       </div>
       <div className="flex gap-2">
         <button type="button" onClick={props.onBack} className="rounded-md border border-border px-4 py-2 text-sm hover:bg-bg">← Back</button>
-        <button type="button" data-testid="start-training" onClick={props.onStart} disabled={props.starting || props.licenceBlock !== null} className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50">
+        <button type="button" data-testid="start-training" onClick={props.onStart} disabled={props.starting || props.licenceBlock !== null || props.frozenBlock !== null} className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50">
           {props.starting ? "Starting…" : "Start Training"}
         </button>
       </div>
+      {props.frozenBlock && (
+        <p role="alert" data-testid="frozen-backbone-block" className="rounded-md border border-danger bg-danger/10 p-3 text-sm font-medium text-danger">
+          {props.frozenBlock}
+        </p>
+      )}
       {props.licenceBlock && (
         <p role="alert" className="text-xs text-warning">{props.licenceBlock}</p>
       )}

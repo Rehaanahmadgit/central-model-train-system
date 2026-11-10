@@ -9,11 +9,13 @@ from __future__ import annotations
 import hashlib
 import http.server
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 import yaml
+from fixtures.make_datasets import build_classification, build_yolo, to_zip
 
 from app.checkpoints.catalog import CatalogError, ensure_catalog, load_catalog
 from app.checkpoints.licences import LicenceStore
@@ -34,6 +36,7 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
     blob: bytes = PAYLOAD
     ranges: list[str] = []
     fail_first: int = 0
+    truncate_first: int = 0  # first response is cut to this many bytes (a partial download)
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         type(self).ranges.append(self.headers.get("Range") or "")
@@ -47,6 +50,9 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
         if range_header and range_header.startswith("bytes="):
             start = int(range_header.split("=", 1)[1].split("-", 1)[0] or 0)
         body = type(self).blob[start:]
+        if type(self).truncate_first and not start:
+            body = body[: type(self).truncate_first]
+            type(self).truncate_first = 0
         self.send_response(206 if start else 200)
         self.send_header("Content-Length", str(len(body)))
         if start:
@@ -64,6 +70,7 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
 def http_server() -> Iterator[str]:
     _RangeHandler.ranges = []
     _RangeHandler.fail_first = 0
+    _RangeHandler.truncate_first = 0
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RangeHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -77,9 +84,7 @@ def http_server() -> Iterator[str]:
 
 def _write_catalog(home: Path, entries: list[dict]) -> None:
     ensure_catalog(home)
-    (home / "checkpoints" / "catalog.yaml").write_text(
-        yaml.safe_dump(entries), encoding="utf-8"
-    )
+    (home / "checkpoints" / "catalog.yaml").write_text(yaml.safe_dump(entries), encoding="utf-8")
     _accept_all(home)
 
 
@@ -207,15 +212,13 @@ def test_resume_seeks_from_offset(tmp_path: Path, http_server: str) -> None:
     entry = resolver._entry("tiny-model@1.0")  # noqa: SLF001
     part = tmp_path / "checkpoints" / ".tmp" / "manual.part"
     part.parent.mkdir(parents=True, exist_ok=True)
-    part.write_bytes(PAYLOAD[: 8192])
+    part.write_bytes(PAYLOAD[:8192])
     resolver._transfer(entry, part)  # noqa: SLF001
     assert part.read_bytes() == PAYLOAD
     assert _RangeHandler.ranges[-1] == "bytes=8192-", "resume must send a Range request"
 
 
-def test_sha_mismatch_is_rejected_and_nothing_cached(
-    tmp_path: Path, http_server: str
-) -> None:
+def test_sha_mismatch_is_rejected_and_nothing_cached(tmp_path: Path, http_server: str) -> None:
     _write_catalog(tmp_path, [_entry(http_server, sha256="0" * 64)])
     with pytest.raises(CheckpointError) as excinfo:
         CheckpointResolver(tmp_path).resolve("tiny-model@1.0")
@@ -340,8 +343,20 @@ def test_cli_import_and_list(tmp_path: Path, capsys: pytest.CaptureFixture[str])
     _write_catalog(tmp_path, [_entry("http://example.invalid/a.bin")])
     incoming = tmp_path / "incoming.bin"
     incoming.write_bytes(PAYLOAD)
-    assert cli_main(["--home", str(tmp_path), "checkpoints", "import", str(incoming),
-                     "--catalog-id", "tiny-model@1.0"]) == 0
+    assert (
+        cli_main(
+            [
+                "--home",
+                str(tmp_path),
+                "checkpoints",
+                "import",
+                str(incoming),
+                "--catalog-id",
+                "tiny-model@1.0",
+            ]
+        )
+        == 0
+    )
     assert "tiny-model@1.0" in capsys.readouterr().out
 
     assert cli_main(["--home", str(tmp_path), "checkpoints", "list"]) == 0
@@ -355,8 +370,20 @@ def test_cli_import_fails_with_clear_error(
     _write_catalog(tmp_path, [_entry("http://example.invalid/a.bin")])
     incoming = tmp_path / "incoming.bin"
     incoming.write_bytes(b"nope")
-    assert cli_main(["--home", str(tmp_path), "checkpoints", "import", str(incoming),
-                     "--catalog-id", "tiny-model@1.0"]) == 1
+    assert (
+        cli_main(
+            [
+                "--home",
+                str(tmp_path),
+                "checkpoints",
+                "import",
+                str(incoming),
+                "--catalog-id",
+                "tiny-model@1.0",
+            ]
+        )
+        == 1
+    )
     assert "CHECKPOINT_SHA_MISMATCH" in capsys.readouterr().out
 
 
@@ -421,3 +448,214 @@ def test_api_reload(client, home: Path) -> None:
     response = client.post("/api/v1/checkpoints/reload")
     assert response.status_code == 200
     assert response.json()["reloaded"] is True
+
+
+# --- Slice D: failure matrix, import, lock wait, run-start guards -------------
+
+
+def test_offline_gives_clear_code_and_offers_import(tmp_path: Path) -> None:
+    _write_catalog(tmp_path, [_entry("http://127.0.0.1:1/model.bin")])  # nothing listens
+    with pytest.raises(CheckpointError) as excinfo:
+        CheckpointResolver(tmp_path, retries=1).resolve("tiny-model@1.0")
+    assert excinfo.value.code == "CHECKPOINT_OFFLINE"
+    assert "Import from file" in excinfo.value.message
+    assert excinfo.value.details["can_import"] is True
+
+
+def test_sha_mismatch_is_not_retried(tmp_path: Path, http_server: str) -> None:
+    _write_catalog(tmp_path, [_entry(http_server, sha256="0" * 64)])
+    with pytest.raises(CheckpointError) as excinfo:
+        CheckpointResolver(tmp_path, retries=3).resolve("tiny-model@1.0")
+    assert excinfo.value.code == "CHECKPOINT_SHA_MISMATCH"
+    assert excinfo.value.details["can_import"] is True
+    assert len(_RangeHandler.ranges) == 1, "no retry loop on a hash mismatch"
+
+
+def test_partial_download_keeps_part_and_next_attempt_resumes(
+    tmp_path: Path, http_server: str
+) -> None:
+    _write_catalog(tmp_path, [_entry(http_server)])
+    _RangeHandler.truncate_first = 8192
+    with pytest.raises(CheckpointError) as excinfo:
+        CheckpointResolver(tmp_path, retries=1).resolve("tiny-model@1.0")
+    assert excinfo.value.code == "CHECKPOINT_PARTIAL"
+    parts = list((tmp_path / "checkpoints" / ".tmp").glob("*.part"))
+    assert len(parts) == 1 and parts[0].stat().st_size == 8192
+
+    resolved = CheckpointResolver(tmp_path, retries=1).resolve("tiny-model@1.0")
+    assert resolved.path.read_bytes() == PAYLOAD
+    assert _RangeHandler.ranges[-1] == "bytes=8192-", "second attempt must resume the .part"
+
+
+def test_disk_full_preflight_uses_size_times_1_5(
+    tmp_path: Path, http_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_catalog(tmp_path, [_entry(http_server)])
+    usage = type("U", (), {"free": int(len(PAYLOAD) * 1.4), "total": 10**9, "used": 0})
+    monkeypatch.setattr("app.checkpoints.resolver.shutil.disk_usage", lambda _p: usage)
+    with pytest.raises(CheckpointError) as excinfo:
+        CheckpointResolver(tmp_path).resolve("tiny-model@1.0")
+    assert excinfo.value.code == "CHECKPOINT_DISK_FULL"
+    assert excinfo.value.details["needed_bytes"] == int(len(PAYLOAD) * 1.5)
+    assert _RangeHandler.ranges == [], "nothing is downloaded when the disk is too small"
+    # exactly enough room (1.5x) passes the preflight
+    ok = type("U", (), {"free": int(len(PAYLOAD) * 1.5) + 1, "total": 10**9, "used": 0})
+    monkeypatch.setattr("app.checkpoints.resolver.shutil.disk_usage", lambda _p: ok)
+    assert CheckpointResolver(tmp_path).resolve("tiny-model@1.0").source == "download"
+
+
+def test_second_resolver_reports_waiting_for_lock(tmp_path: Path, http_server: str) -> None:
+    from app.storage.locks import FileLock
+
+    _write_catalog(tmp_path, [_entry(http_server)])
+    events: list[str] = []
+    resolver = CheckpointResolver(tmp_path, progress=lambda e: events.append(e["event"]))
+    lock = FileLock(tmp_path / "checkpoints" / "locks" / "tiny-model_1.0.lock")
+    lock.acquire()  # "another process" is downloading
+    result: list[str] = []
+    thread = threading.Thread(
+        target=lambda: result.append(resolver.resolve("tiny-model@1.0").source)
+    )
+    thread.start()
+    deadline = time.monotonic() + 10
+    while "waiting_for_lock" not in events and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert "waiting_for_lock" in events and not result, "must wait, not download"
+    lock.release()
+    thread.join(timeout=30)
+    assert result == ["download"] and len(_RangeHandler.ranges) == 1
+
+
+def test_import_stream_verifies_and_stores(tmp_path: Path) -> None:
+    _write_catalog(tmp_path, [_entry("http://127.0.0.1:1/x.bin")])
+    resolver = CheckpointResolver(tmp_path)
+    with pytest.raises(CheckpointError) as bad:
+        resolver.import_stream("tiny-model@1.0", iter([b"not the weights"]))
+    assert bad.value.code == "CHECKPOINT_SHA_MISMATCH"
+    ok = resolver.import_stream("tiny-model@1.0", iter([PAYLOAD[:5000], PAYLOAD[5000:]]))
+    assert ok.source == "import" and ok.path.read_bytes() == PAYLOAD
+    assert list((tmp_path / "checkpoints" / ".tmp").glob("*.upload")) == []
+
+
+def test_api_import_from_file_then_resolve_offline(client, home: Path) -> None:
+    _patch_catalog(home, [_entry("http://127.0.0.1:1/x.bin")])  # unreachable source
+    wrong = client.put("/api/v1/checkpoints/tiny-model@1.0/import", content=b"junk")
+    assert wrong.status_code == 409
+    assert wrong.json()["error"]["code"] == "CHECKPOINT_SHA_MISMATCH"
+    ok = client.put("/api/v1/checkpoints/tiny-model@1.0/import", content=PAYLOAD)
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["local"] is True
+    # now a run can resolve it with no network
+    assert CheckpointResolver(home, retries=1).resolve("tiny-model@1.0").source == "cache"
+
+
+def _passed_verification(client, family: str, entries: dict[str, bytes]) -> str:
+    from helpers import upload_dataset
+
+    completed = upload_dataset(client, f"{family}.zip", to_zip(entries))
+    verification = client.post(
+        "/api/v1/verifications",
+        json={"dataset_hash": completed["dataset_hash"], "model_family": family, "preset": "dev"},
+    ).json()
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        body = client.get(f"/api/v1/verifications/{verification['id']}").json()
+        if body["status"] != "running":
+            return verification["id"]
+        time.sleep(0.1)
+    raise AssertionError("verification did not finish")
+
+
+def test_run_create_without_accepted_licence_is_409(client, home: Path) -> None:
+    _patch_catalog(home, [_entry("http://127.0.0.1:1/x.bin", model_family="cnn")])
+    (home / "licences" / "accepted.json").unlink()  # the user has NOT accepted
+    verification = _passed_verification(client, "cnn", build_classification(per_class=3))
+    response = client.post(
+        "/api/v1/runs",
+        json={
+            "verification_id": verification,
+            "name": "x",
+            "config": {},
+            "checkpoint_catalog_id": "tiny-model@1.0",
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "LICENCE_NOT_ACCEPTED"
+
+
+def test_frozen_backbone_without_checkpoint_is_refused(client) -> None:
+    verification = _passed_verification(client, "rtdetr", build_yolo())
+    for scratch in (True, False):
+        response = client.post(
+            "/api/v1/runs",
+            json={
+                "verification_id": verification,
+                "name": "x",
+                "config": {"freeze_backbone": True},
+                "checkpoint_catalog_id": None,
+                "from_scratch": scratch,
+            },
+        )
+        assert response.status_code == 400, response.text
+        assert response.json()["error"]["code"] == "FROZEN_BACKBONE_NEEDS_PRETRAINED"
+    # unfrozen scratch training is allowed
+    ok = client.post(
+        "/api/v1/runs",
+        json={
+            "verification_id": verification,
+            "name": "x",
+            "config": {"freeze_backbone": False, "dev_preset": True},
+            "checkpoint_catalog_id": None,
+            "from_scratch": True,
+        },
+    )
+    assert ok.status_code == 202, ok.text
+    client.post(f"/api/v1/runs/{ok.json()['id']}/stop")
+
+
+@pytest.mark.parametrize(
+    ("raised", "code"),
+    [
+        ("CHECKPOINT_OFFLINE", "CHECKPOINT_OFFLINE"),
+        ("CHECKPOINT_SHA_MISMATCH", "CHECKPOINT_SHA_MISMATCH"),
+        ("CHECKPOINT_DISK_FULL", "CHECKPOINT_DISK_FULL"),
+        ("CHECKPOINT_PARTIAL", "CHECKPOINT_PARTIAL"),
+        ("LICENCE_NOT_ACCEPTED", "LICENCE_NOT_ACCEPTED"),
+    ],
+)
+def test_run_start_failure_matrix_fake_resolver(
+    client, home: Path, monkeypatch: pytest.MonkeyPatch, raised: str, code: str
+) -> None:
+    """A fake resolver raises each failure; the run fails with that exact reason + import flag."""
+    _patch_catalog(home, [_entry("http://127.0.0.1:1/x.bin", model_family="cnn")])
+
+    def boom(self, catalog_id, *, task=None):  # noqa: ARG001
+        raise CheckpointError(
+            raised, f"fake {raised}", {"catalog_id": catalog_id, "can_import": True}
+        )
+
+    monkeypatch.setattr("app.training.job_manager.CheckpointResolver.resolve", boom)
+    verification = _passed_verification(client, "cnn", build_classification(per_class=3))
+    created = client.post(
+        "/api/v1/runs",
+        json={
+            "verification_id": verification,
+            "name": "x",
+            "config": {},
+            "checkpoint_catalog_id": "tiny-model@1.0",
+        },
+    )
+    assert created.status_code == 202, created.text
+    run_id = created.json()["id"]
+    deadline = time.monotonic() + 30
+    body: dict = {}
+    while time.monotonic() < deadline:
+        body = client.get(f"/api/v1/runs/{run_id}").json()
+        if body["state"] == "failed":
+            break
+        time.sleep(0.1)
+    assert body["state"] == "failed", body
+    assert body["failure"]["reason"] == code
+    assert body["failure"]["can_import"] is True
+    assert body["failure"]["catalog_id"] == "tiny-model@1.0"
+    assert f"fake {raised}" in body["failure"]["details"]

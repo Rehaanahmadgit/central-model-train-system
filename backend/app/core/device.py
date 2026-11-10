@@ -21,6 +21,7 @@ class DeviceInfo:
     torch_installed: bool
     cuda_available: bool
     reason: str
+    memory_gb: float | None = None  # total VRAM of the selected GPU, None = unknown
 
     @property
     def is_gpu(self) -> bool:
@@ -34,6 +35,7 @@ class DeviceInfo:
             "torch_installed": self.torch_installed,
             "cuda_available": self.cuda_available,
             "reason": self.reason,
+            "memory_gb": self.memory_gb,
         }
 
 
@@ -83,6 +85,7 @@ def resolve_device(requested: str = "auto") -> DeviceInfo:
             torch_installed=torch_installed,
             cuda_available=True,
             reason=torch_reason,
+            memory_gb=_gpu_memory_gb(index),
         )
     return DeviceInfo(
         kind="cpu",
@@ -92,6 +95,16 @@ def resolve_device(requested: str = "auto") -> DeviceInfo:
         cuda_available=False,
         reason=f"{torch_reason}; falling back to CPU",
     )
+
+
+def _gpu_memory_gb(index: int | None) -> float | None:
+    """Total VRAM in GB, or None when it cannot be read (never guessed)."""
+    try:
+        torch = importlib.import_module("torch")
+        props = torch.cuda.get_device_properties(index or 0)
+        return round(float(props.total_memory) / (1024**3), 2)
+    except Exception:  # pragma: no cover - no CUDA / odd driver
+        return None
 
 
 def _gpu_name(index: int | None) -> str:

@@ -25,7 +25,7 @@ from app.core.device import DeviceInfo, resolve_device
 from app.verification import VERIFIER_VERSION
 from app.verification.cache import cache_key, read_pointer
 from app.verification.manifest import build_manifest
-from app.verification.recommend import rank_checkpoints, recommend_hparams, size_bucket
+from app.verification.recommend import auto_select, rank_checkpoints, recommend_hparams, size_bucket
 from app.verification.runner import run_pipeline
 from app.verification.tasks import detect_task
 
@@ -438,3 +438,125 @@ def test_preset_change_is_not_a_cache_hit(client) -> None:
         },
     ).json()
     assert second["cached"] is False
+
+
+# --- Slice D: hard filters + auto-select -------------------------------------
+
+GPU_4GB = DeviceInfo("cuda", 0, "NVIDIA Test", True, True, "test", memory_gb=4.0)
+GOOD_SHA = "a" * 64
+
+
+def _cat(**overrides: object):
+    from app.checkpoints.catalog import CatalogEntry
+
+    base = {
+        "name": "m",
+        "version": "1",
+        "model_family": "rtdetr",
+        "task_types": ("object_detection",),
+        "pretrained_on": "coco",
+        "source_type": "url",
+        "source_uri": "https://example.invalid/m.pth",
+        "sha256": GOOD_SHA,
+        "size_bytes": 80_000_000,
+        "min_vram_gb": 0.0,
+    }
+    base.update(overrides)
+    return CatalogEntry(**base)  # type: ignore[arg-type]
+
+
+def _rank(entries, device=GPU_4GB, **kwargs):
+    params = {"task_type": "object_detection", "model_family": "rtdetr", "bucket": "small"}
+    params.update(kwargs)
+    return rank_checkpoints(entries, device=device, **params)
+
+
+def test_auto_select_picks_eligible_offered_entry_with_reason() -> None:
+    ranked = _rank([_cat()], num_classes=2)
+    chosen, reason = auto_select(ranked)
+    assert chosen == "m@1"
+    assert "exact task match" in reason and "passed:" in reason
+    assert "VRAM need not measured" in reason, "min_vram 0 is a warning, not a rejection"
+
+
+def test_filter_task_and_family_remove_entry() -> None:
+    assert _rank([_cat(task_types=("image_classification",))]) == []
+    assert _rank([_cat(model_family="resnet")]) == []
+
+
+def test_filter_vram_larger_than_gpu_is_rejected() -> None:
+    ranked = _rank([_cat(min_vram_gb=8.0)])
+    assert ranked[0]["eligible"] is False and "GPU has 4 GB" in ranked[0]["rejected"][0]
+    chosen, reason = auto_select(ranked)
+    assert chosen is None and "hard filters" in reason
+
+
+def test_filter_vram_fits_is_eligible_and_cpu_with_vram_need_rejected() -> None:
+    assert _rank([_cat(min_vram_gb=3.5)])[0]["eligible"] is True
+    assert _rank([_cat(min_vram_gb=3.5)], device=CPU)[0]["eligible"] is False
+
+
+def test_filter_unverified_sha_is_never_auto_selected() -> None:
+    placeholder = _cat(sha256="TODO(user): provide the verified sha256")
+    ranked = _rank([placeholder])
+    assert ranked[0]["eligible"] is False
+    assert auto_select(ranked)[0] is None
+    # and an offered entry beats it even with a lower raw score
+    better = _cat(name="real", pretrained_on="")
+    assert auto_select(_rank([placeholder, better]))[0] == "real@1"
+
+
+def test_filter_todo_source_uri_is_not_offered() -> None:
+    ranked = _rank([_cat(source_uri="TODO(user): provide url")])
+    assert ranked[0]["eligible"] is False and auto_select(ranked)[0] is None
+
+
+def test_filter_licence_forbidding_commercial_use_is_rejected() -> None:
+    ranked = _rank([_cat(commercial_use=False)])
+    assert ranked[0]["eligible"] is False and "commercial" in ranked[0]["rejected"][0]
+
+
+def test_filter_class_head_needs_at_least_one_class() -> None:
+    assert _rank([_cat()], num_classes=0)[0]["eligible"] is False
+    assert _rank([_cat()], num_classes=80)[0]["eligible"] is True
+
+
+def test_unverified_weights_licence_is_a_warning_in_reason() -> None:
+    ranked = _rank([_cat()])
+    assert "weights licence VERIFY" in ranked[0]["warnings"]
+
+
+def test_derived_report_carries_auto_selected_and_reason(tmp_path: Path) -> None:
+    raw = materialize(tmp_path / "raw", build_yolo())
+    home = tmp_path / "home"
+    (home / "checkpoints").mkdir(parents=True)
+    (home / "checkpoints" / "catalog.yaml").write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "rtdetr-t",
+                    "version": "1",
+                    "model_family": "rtdetr",
+                    "task_types": ["object_detection"],
+                    "pretrained_on": "coco",
+                    "source_uri": "https://example.invalid/t.pth",
+                    "sha256": GOOD_SHA,
+                    "size_bytes": 1000,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    outcome = run_pipeline(
+        raw,
+        "a" * 64,
+        "rtdetr",
+        None,
+        sample_cap=100,
+        check_timeout_seconds=30,
+        progress=lambda event: None,
+        home=home,
+    )
+    derived = outcome["derived"]
+    assert derived["auto_selected"] == "rtdetr-t@1"
+    assert derived["auto_select_reason"]

@@ -127,6 +127,21 @@ class JobManager:
             self._write_env(run_id, env)
             await self._resolve_checkpoint(run_id, record)
             process = await self._spawn(run_id, gpu_index=gpu_index)
+        except CheckpointError as exc:
+            # Clear, actionable failure (offline, sha mismatch, disk full, licence...)
+            # instead of UNKNOWN; the UI offers "Import from file" [Slice D].
+            self._release_slot(gpu_index)
+            self._set_state(
+                run_id,
+                "failed",
+                failure={
+                    "reason": exc.code,
+                    "details": exc.message,
+                    "catalog_id": exc.details.get("catalog_id") or _catalog_id_of(record),
+                    "can_import": bool(exc.details.get("can_import")),
+                },
+            )
+            return
         except BaseException:
             self._release_slot(gpu_index)
             self._set_state(run_id, "failed", failure={"reason": "UNKNOWN"})
@@ -203,14 +218,18 @@ class JobManager:
                 "reason": failure.get("reason", "UNKNOWN"),
                 "details": failure.get("details"),
             }
+            for extra in ("catalog_id", "can_import"):
+                if extra in failure:
+                    record["failure"][extra] = failure[extra]
+            record.pop("waiting_for", None)
         elif to == "stopped":
             record["failure"] = {"reason": None, "details": None}
         if to in ("completed", "failed", "stopped"):
             record["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
         if to in ("running", "paused"):
-            record["started_at"] = record.get("started_at") or datetime.now(
-                UTC
-            ).isoformat(timespec="seconds")
+            record["started_at"] = record.get("started_at") or datetime.now(UTC).isoformat(
+                timespec="seconds"
+            )
         path = self._home / "runs" / run_id / "run.json"
         with FileLock(self._home / "locks" / f"run-{run_id}.lock"):
             atomic_write_json(path, record)
@@ -255,14 +274,42 @@ class JobManager:
         if not catalog_id:
             return
         self._log(run_id, "INFO", f"resolving checkpoint {catalog_id} before training")
-        resolver = CheckpointResolver(self._home)
-        try:
-            resolved = await asyncio.to_thread(resolver.resolve, str(catalog_id))
-        except CheckpointError as exc:
-            raise RuntimeError(f"checkpoint {catalog_id}: {exc.message}") from exc
+        throttle = {"at": 0.0}
+
+        def on_progress(event: dict[str, Any]) -> None:
+            kind = str(event.get("event"))
+            now = time.monotonic()
+            if kind == "download_progress" and now - throttle["at"] < 1.0:
+                return
+            throttle["at"] = now
+            status = {
+                "waiting_for_lock": "waiting_lock",
+                "download_progress": "downloading",
+                "cache_hit": "ready",
+            }.get(kind)
+            if status is None:
+                return
+            self._write_waiting(
+                run_id,
+                {
+                    "status": status,
+                    "catalog_id": str(catalog_id),
+                    "percent": event.get("percent"),
+                    "downloaded_bytes": event.get("downloaded_bytes"),
+                    "total_bytes": event.get("total_bytes"),
+                },
+            )
+
+        # "waiting: checkpoint" is visible while the run is still `preparing`.
+        self._write_waiting(
+            run_id, {"status": "resolving", "catalog_id": str(catalog_id), "percent": None}
+        )
+        resolver = CheckpointResolver(self._home, progress=on_progress)
+        resolved = await asyncio.to_thread(resolver.resolve, str(catalog_id))
         path = self._home / "runs" / run_id / "run.json"
         data = read_json(path)
         if isinstance(data, dict):
+            data.pop("waiting_for", None)
             data["checkpoint"] = {
                 "catalog_id": str(catalog_id),
                 "sha256": resolved.sha256,
@@ -270,6 +317,14 @@ class JobManager:
                 "path": str(resolved.path),
             }
             with FileLock(self._home / "locks" / f"run-{run_id}.lock"):
+                atomic_write_json(path, data)
+
+    def _write_waiting(self, run_id: str, waiting: dict[str, Any]) -> None:
+        path = self._home / "runs" / run_id / "run.json"
+        with FileLock(self._home / "locks" / f"run-{run_id}.lock"):
+            data = read_json(path)
+            if isinstance(data, dict):
+                data["waiting_for"] = {"what": "checkpoint", **waiting}
                 atomic_write_json(path, data)
 
     def _write_best(self, run_id: str, best: dict[str, Any]) -> None:
@@ -517,3 +572,9 @@ def _git_commit() -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.strip() or None
+
+
+def _catalog_id_of(record: dict[str, Any]) -> str | None:
+    checkpoint = record.get("checkpoint")
+    value = checkpoint.get("catalog_id") if isinstance(checkpoint, dict) else None
+    return str(value) if value else None

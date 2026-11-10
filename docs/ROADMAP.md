@@ -8,6 +8,6 @@ Original phase plan: `doc/12_ROADMAP.md`. Current work is slice-by-slice (one co
 | A2 | Shared TrainEngine | done | `7c4dbef` |
 | B | Verification honesty | done | `ef169eb` |
 | C | Model zoo + licence card + gate | done | `718761b` |
-| D | rank_checkpoints + auto-select + auto-download + failure handling | next | — |
+| D | rank_checkpoints + auto-select + auto-download + failure handling + frozen-backbone guard | done | Slice D commit (see `git log`) |
 | E | Token default ON, upload cap, https-only source_uri | planned | — |
 | F | Config number types, predictions default, header fixes, device auto | planned | — |

@@ -52,6 +52,7 @@ from app.verification.checks.structural import (
 from app.verification.context import CheckResult, VerificationContext
 from app.verification.manifest import ManifestSummary, build_manifest
 from app.verification.recommend import (
+    auto_select,
     rank_checkpoints,
     recommend_hparams,
     size_bucket,
@@ -173,7 +174,9 @@ def _derived(
         model_family=ctx.model_family,
         bucket=size_bucket(total),
         device=device,
+        num_classes=len(summary.class_names),
     )
+    auto_id, auto_reason = auto_select(recommended)
     local_index = _read_checkpoint_index(ctx)
     for item in recommended:
         record = local_index.get(str(item["catalog_id"])) or {}
@@ -195,6 +198,8 @@ def _derived(
         "split_manifest_path": None,
         "recommended_hparams": hparams,
         "recommended_checkpoints": recommended,
+        "auto_selected": auto_id,
+        "auto_select_reason": auto_reason,
         "checkpoint_catalog_configured": bool(ctx.facts.get("checkpoint_catalog_configured")),
         "checkpoint_catalog_ready": int(ctx.facts.get("checkpoint_catalog_ready") or 0),
         "preset": ctx.facts.get("preset"),

@@ -24,6 +24,42 @@ def size_bucket(num_samples: int) -> str:
     return "large"
 
 
+def _hard_filters(
+    entry: CatalogEntry,
+    *,
+    task_type: str | None,
+    model_family: str,
+    num_classes: int | None,
+    device: DeviceInfo,
+) -> tuple[list[str], list[str]]:
+    """Return (rejections, warnings). Any rejection means "never auto-select"."""
+    rejected: list[str] = []
+    warnings: list[str] = []
+    if task_type is not None and task_type not in entry.task_types:
+        rejected.append(f"task {task_type} not supported")
+    if entry.model_family != model_family:
+        rejected.append(f"family {entry.model_family} is not {model_family}")
+    # Class-head compatibility: the trainer truncates/pads the pretrained head to the
+    # dataset's class count (rtdetr.load_pretrained), so any count >= 1 fits. The
+    # dataset file format is irrelevant to the weights (COCO and YOLO both work).
+    if num_classes is not None and num_classes < 1:
+        rejected.append("dataset has no classes")
+    if entry.min_vram_gb > 0:
+        if not device.is_gpu:
+            rejected.append(f"needs {entry.min_vram_gb:g} GB VRAM, no GPU available")
+        elif device.memory_gb is not None and entry.min_vram_gb > device.memory_gb:
+            rejected.append(f"needs {entry.min_vram_gb:g} GB VRAM, GPU has {device.memory_gb:g} GB")
+    else:
+        warnings.append("VRAM need not measured")
+    if entry.commercial_use is False:
+        rejected.append("licence forbids commercial use")
+    if not entry.offered:
+        rejected.append("not offered yet (no verified sha256/URL)")
+    if not entry.weights_license_verified:
+        warnings.append("weights licence VERIFY")
+    return rejected, warnings
+
+
 def rank_checkpoints(
     catalog: list[CatalogEntry],
     *,
@@ -31,8 +67,14 @@ def rank_checkpoints(
     model_family: str,
     bucket: str,
     device: DeviceInfo,
+    num_classes: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Score catalog entries with the documented v1 rules [doc 07 §3.2]."""
+    """Score catalog entries (documented v1 rules) and flag hard-filter failures.
+
+    Every returned item has ``eligible`` plus ``rejected`` / ``warnings`` lists.
+    Entries failing a hard filter stay in the list (the UI explains why) but are
+    never auto-selected [Slice D].
+    """
     ranked: list[dict[str, Any]] = []
     for entry in catalog:
         if not entry.is_active:
@@ -41,6 +83,13 @@ def rank_checkpoints(
             continue
         if entry.model_family != model_family:
             continue
+        rejected, warnings = _hard_filters(
+            entry,
+            task_type=task_type,
+            model_family=model_family,
+            num_classes=num_classes,
+            device=device,
+        )
         score = 0
         reasons: list[str] = []
         if task_type is not None and task_type in entry.task_types:
@@ -56,29 +105,56 @@ def rank_checkpoints(
             # Smaller checkpoints are preferred for small data; size_bytes is a proxy.
             score += 1 if entry.size_bytes <= 200_000_000 else 0
             reasons.append("small-data friendly variant preferred")
-        needs_gpu = entry.min_vram_gb > 0
-        if needs_gpu and not device.is_gpu:
-            score -= 5
-            reasons.append("needs a GPU, none available")
-        elif entry.min_vram_gb:
+        if entry.min_vram_gb > 0 and device.is_gpu:
             reasons.append(f"needs ~{entry.min_vram_gb:.0f} GB VRAM")
         ranked.append(
             {
                 "catalog_id": entry.catalog_id,
                 "score": score,
                 "reason": "; ".join(reasons),
+                "eligible": not rejected,
+                "rejected": rejected,
+                "warnings": warnings,
                 "local": False,
                 "size_bytes": entry.size_bytes,
                 "license": entry.license,
                 "sha256_verified": entry.verified,
-                "downloadable": entry.verified and not entry.source_uri.startswith("TODO(user)"),
+                "downloadable": entry.offered,
             }
         )
-    # Downloadable entries first (verified sha256 + real source), then score.
-    # A placeholder/unverified entry must never outrank a real local/downloadable
-    # one [doc 07 §3.2, user bug 3].
-    ranked.sort(key=lambda item: (-int(item["downloadable"]), -item["score"], item["catalog_id"]))
+    # Eligible first, then downloadable, then score: a placeholder/unverified entry
+    # must never outrank a real one [doc 07 §3.2, user bug 3].
+    ranked.sort(
+        key=lambda item: (
+            -int(item["eligible"]),
+            -int(item["downloadable"]),
+            -item["score"],
+            item["catalog_id"],
+        )
+    )
     return ranked
+
+
+def auto_select(ranked: list[dict[str, Any]]) -> tuple[str | None, str]:
+    """Pick the top eligible entry and say why (or why nothing was picked)."""
+    if not ranked:
+        return None, "no catalog entry matches this task and model family"
+    top = ranked[0]
+    if not top["eligible"]:
+        why = "; ".join(
+            f"{item['catalog_id']}: {', '.join(item['rejected'])}" for item in ranked[:3]
+        )
+        return None, f"no checkpoint passed the hard filters ({why})"
+    others = [item["catalog_id"] for item in ranked[1:] if item["eligible"]]
+    parts = [
+        top["reason"],
+        "passed: task, family, class head, VRAM, licence, verified sha256",
+    ]
+    if top["warnings"]:
+        parts.append("note: " + ", ".join(top["warnings"]))
+    if others:
+        parts.append(f"{len(others)} other eligible candidate(s) scored lower")
+    return str(top["catalog_id"]), "; ".join(parts)
 
 
 def finetune_strategy(bucket: str) -> str:

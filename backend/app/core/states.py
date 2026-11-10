@@ -40,7 +40,21 @@ TERMINAL_STATES: Final = frozenset({"completed", "failed", "stopped"})
 # Failure reasons [doc 08 §3.8]. A user-requested stop is NOT a failure (D5):
 # it ends in `stopped` with `failure: null`.
 FAILURE_REASONS: Final = frozenset(
-    {"OOM", "DATA_ERROR", "NAN_LOSS", "WORKER_LOST", "GPU_UNAVAILABLE", "UNKNOWN"}
+    {
+        "OOM",
+        "DATA_ERROR",
+        "NAN_LOSS",
+        "WORKER_LOST",
+        "GPU_UNAVAILABLE",
+        "UNKNOWN",
+        # checkpoint resolution at run start [Slice D]
+        "LICENCE_NOT_ACCEPTED",
+        "CHECKPOINT_OFFLINE",
+        "CHECKPOINT_PARTIAL",
+        "CHECKPOINT_DOWNLOAD_FAILED",
+        "CHECKPOINT_SHA_MISMATCH",
+        "CHECKPOINT_DISK_FULL",
+    }
 )
 
 

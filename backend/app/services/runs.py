@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.checkpoints.catalog import find_entry, load_catalog
+from app.checkpoints.licences import LicenceStore
 from app.core.config import Settings
 from app.core.errors import ApiError
 from app.storage.atomic import atomic_write_json, read_json
@@ -46,9 +48,7 @@ def _schema_properties(schema: dict[str, Any] | None) -> dict[str, dict[str, Any
     return {str(key): value for key, value in properties.items() if isinstance(value, dict)}
 
 
-def normalize_config(
-    config: dict[str, Any], schema: dict[str, Any] | None
-) -> dict[str, Any]:
+def normalize_config(config: dict[str, Any], schema: dict[str, Any] | None) -> dict[str, Any]:
     """Coerce hyperparameters to the types the plugin schema declares.
 
     The wizard is HTML: an input hands back a string, so ``batch_size`` could
@@ -101,10 +101,54 @@ def normalize_config(
             elif text in ("false", "0", "no", "off"):
                 normalized[key] = False
             else:
-                raise ApiError(
-                    400, "INVALID_CONFIG", f"{key} must be a boolean (got {value!r})"
-                )
+                raise ApiError(400, "INVALID_CONFIG", f"{key} must be a boolean (got {value!r})")
     return normalized
+
+
+def _guard_pretrained(
+    home: Path,
+    config: dict[str, Any],
+    schema: dict[str, Any],
+    *,
+    checkpoint_catalog_id: str | None,
+    resuming: bool,
+) -> None:
+    """Refuse runs that cannot work, with a clear message [Slice D].
+
+    * a frozen backbone without pretrained weights cannot learn;
+    * a chosen checkpoint whose licence is not accepted is a 409 right here, not a
+      surprise failure after the run was queued.
+    """
+    properties = schema.get("properties")
+    if (
+        isinstance(properties, dict)
+        and "freeze_backbone" in properties
+        and config.get("freeze_backbone")
+        and not checkpoint_catalog_id
+        and not resuming
+    ):
+        raise ApiError(
+            400,
+            "FROZEN_BACKBONE_NEEDS_PRETRAINED",
+            "Pretrained weights ke bina frozen backbone seekh nahi sakta: pick a pretrained "
+            "checkpoint, or turn off freeze_backbone to train from scratch.",
+        )
+    if checkpoint_catalog_id:
+        entry = find_entry(load_catalog(home), checkpoint_catalog_id)
+        if entry is None:
+            raise ApiError(
+                404,
+                "CHECKPOINT_NOT_FOUND",
+                f"checkpoint {checkpoint_catalog_id!r} is not in the catalog",
+            )
+        if not LicenceStore(home).is_accepted(entry):
+            raise ApiError(
+                409,
+                "LICENCE_NOT_ACCEPTED",
+                f"Accept the licence for {checkpoint_catalog_id} (Configure step) before "
+                "starting: the weights are not downloaded or used until you do.",
+                {"catalog_id": checkpoint_catalog_id},
+            )
 
 
 def _run_path(home: Path, run_id: str) -> Path:
@@ -170,6 +214,14 @@ def create_run(
     resolved_config.update(config or {})
     # Types are enforced at the one door every run goes through (D124).
     resolved_config = normalize_config(resolved_config, plugin.hparam_schema)
+
+    _guard_pretrained(
+        home,
+        resolved_config,
+        plugin.hparam_schema,
+        checkpoint_catalog_id=None if from_scratch else checkpoint_catalog_id,
+        resuming=resume_from is not None,
+    )
 
     run_id = new_run_id()
     directory = home / "runs" / run_id

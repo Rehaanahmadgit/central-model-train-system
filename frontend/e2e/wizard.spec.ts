@@ -152,8 +152,12 @@ test("wizard prefills Configure from recommended_hparams and checkpoint", async 
               reason: "exact task match",
               local: true,
               downloadable: true,
+              eligible: true,
             },
           ],
+          auto_selected: "rtdetr-r18vd@coco-1.0",
+          auto_select_reason:
+            "exact task match (object_detection); pretrained on coco; passed: task, family, class head, VRAM, licence, verified sha256",
         },
       },
     });
@@ -186,6 +190,61 @@ test("wizard prefills Configure from recommended_hparams and checkpoint", async 
   await expect(page.getByTestId("run-target")).toContainText("GPU (full)");
   const checkpoint = page.locator('input[aria-label="Checkpoint catalog id"]');
   await expect(checkpoint).toHaveValue("rtdetr-r18vd@coco-1.0");
+  // "Kyun chuna" is shown, and an override is acknowledged [Slice D].
+  await expect(page.getByTestId("auto-reason")).toContainText("exact task match");
+  await checkpoint.fill("my-own@1");
+  await expect(page.getByTestId("auto-reason")).toHaveCount(0);
+  await expect(page.getByTestId("manual-pick")).toContainText("rtdetr-r18vd@coco-1.0");
+});
+
+// Scratch (or empty checkpoint) + frozen backbone cannot learn: Next is blocked with
+// a red message, and unblocks once freeze_backbone is off [Slice D].
+test("scratch with a frozen backbone blocks Configure Next", async ({ page }) => {
+  await page.route("**/api/v1/verifications/*", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      json: {
+        id: "ver_mock_frozen",
+        status: "passed",
+        can_train: true,
+        checks: [],
+        derived: {
+          task_type: "object_detection",
+          format: "yolo",
+          recommended_checkpoints: [],
+          auto_selected: null,
+          auto_select_reason: "no checkpoint passed the hard filters (test)",
+        },
+      },
+    });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "New training" }).click();
+  await page.locator("#dataset-file-input").setInputFiles({
+    name: "apple-orange.zip",
+    mimeType: "application/zip",
+    buffer: makeYoloZip(),
+  });
+  await page.getByTestId("model-rtdetr").click();
+  await page.getByTestId("start-verification").click();
+  await expect(page.getByText("Dataset verified successfully")).toBeVisible({ timeout: 60_000 });
+  const ack = page.getByTestId("ack-warnings");
+  if (await ack.isVisible()) await ack.check();
+  await page.getByTestId("verify-next").click();
+
+  // Nothing auto-selected + freeze_backbone default true => blocked.
+  const freeze = page.locator("label").filter({ hasText: "freeze_backbone" }).locator("input");
+  await expect(freeze).toBeChecked();
+  await expect(page.getByTestId("configure-next")).toBeDisabled();
+  await expect(page.getByTestId("licence-block")).toContainText("frozen backbone");
+
+  await page.getByLabel("Train from scratch").check();
+  await expect(page.getByTestId("configure-next")).toBeDisabled();
+
+  await freeze.uncheck();
+  await expect(page.getByTestId("configure-next")).toBeEnabled();
+  await freeze.check();
+  await expect(page.getByTestId("configure-next")).toBeDisabled();
 });
 
 

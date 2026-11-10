@@ -6,8 +6,11 @@ No user data is involved anywhere here [doc 10 §1].
 
 from __future__ import annotations
 
+import asyncio
 import re
 import shutil
+import uuid
+from collections.abc import Iterator
 from typing import Any, cast
 
 from fastapi import APIRouter, Request
@@ -120,14 +123,51 @@ def prefetch(catalog_id: str, request: Request) -> dict[str, Any]:
     }
 
 
+@router.put("/{catalog_id}/import")
+async def import_checkpoint(catalog_id: str, request: Request) -> dict[str, Any]:
+    """ "Import from file": the raw request body is the weights file [offline path].
+
+    Verified against the catalog sha256 before it enters the store; not licence-gated
+    (the licence is still checked when a run uses it).
+    """
+    settings = _settings(request)
+    resolver = CheckpointResolver(settings.home)
+    cid = _catalog_id(catalog_id)
+    # Spool the stream to a temp file first so the async body never blocks the loop.
+    spool = settings.home / "checkpoints" / ".tmp"
+    spool.mkdir(parents=True, exist_ok=True)
+    staging = spool / f"upload-{uuid.uuid4().hex}.bin"
+    try:
+        with staging.open("wb") as handle:
+            async for block in request.stream():
+                handle.write(block)
+
+        def chunks() -> Iterator[bytes]:
+            with staging.open("rb") as source:
+                while block := source.read(1024 * 256):
+                    yield block
+
+        try:
+            resolved = await asyncio.to_thread(resolver.import_stream, cid, chunks())
+        except CheckpointError as exc:
+            raise _error(exc) from exc
+    finally:
+        staging.unlink(missing_ok=True)
+    return {
+        "catalog_id": resolved.catalog_id,
+        "local": True,
+        "source": resolved.source,
+        "sha256": resolved.sha256,
+        "size_bytes": resolved.size_bytes,
+    }
+
+
 @router.delete("/{catalog_id}/local")
 def evict(catalog_id: str, request: Request) -> dict[str, Any]:
     """Evict a cached file; never allowed while a run uses it [doc 05 §4]."""
     settings = _settings(request)
     if _in_use_by_running_job(settings.home, catalog_id):
-        raise ApiError(
-            409, "CHECKPOINT_IN_USE", f"{catalog_id} is used by a running job"
-        )
+        raise ApiError(409, "CHECKPOINT_IN_USE", f"{catalog_id} is used by a running job")
     removed = CheckpointResolver(settings.home).evict(_catalog_id(catalog_id))
     if not removed:
         raise ApiError(404, "CHECKPOINT_NOT_CACHED", f"{catalog_id} is not cached locally")

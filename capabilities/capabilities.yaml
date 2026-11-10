@@ -12,8 +12,10 @@ capabilities:
   - {id: checkpoint_resolver, status: tested, evidence: "S7 tests (sha mismatch, lock, resume, import)"}
   - {id: cnn_trainer, status: tested, evidence: "S8 tests"}
   - {id: random_forest_trainer, status: tested, evidence: "S8 tests"}
-  - {id: checkpoint_auto_select, status: planned, evidence: "Slice D"}
-  - {id: checkpoint_auto_download, status: planned, evidence: "Slice D"}
+  - {id: checkpoint_auto_select, status: tested, evidence: "test_verification_cache.py hard-filter tests; wizard.spec.ts; not user-run"}
+  - {id: checkpoint_auto_download, status: tested, evidence: "test_checkpoints.py failure matrix (local HTTP server + fake resolver); real GitHub download + UI progress NOT RUN"}
+  - {id: import_from_file, status: tested, evidence: "test_checkpoints.py import_stream + PUT import API; browser upload NOT RUN"}
+  - {id: frozen_backbone_guard, status: tested, evidence: "test_checkpoints.py, wizard.spec.ts, pretrained-logic.spec.ts"}
   - {id: token_default_on, status: planned, evidence: "Slice E"}
   - {id: device_auto_banner, status: planned, evidence: "Slice F"}
   - {id: gpu_container_run, status: blocked, evidence: "NVIDIA Container Toolkit not installed on dev host"}
