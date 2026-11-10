@@ -5,6 +5,7 @@ import { SummaryCards } from "../components/SummaryCards";
 import { RecommendedCheckpoint } from "../components/RecommendedCheckpoint";
 import { LicenceCard } from "../components/LicenceCard";
 import { licenceGate, type CatalogVariant } from "../lib/licence";
+import { deviceNotice, type GpuInfo } from "../lib/device";
 import { autoSelection, frozenBackboneBlock, selectionSource } from "../lib/pretrained";
 import {
   coerceConfig,
@@ -620,6 +621,18 @@ function ConfigureStep(props: ConfigureStepProps) {
   const [variantsError, setVariantsError] = useState<string | null>(null);
   const [acceptBusy, setAcceptBusy] = useState(false);
   const [acceptError, setAcceptError] = useState<string | null>(null);
+  const [gpu, setGpu] = useState<GpuInfo | null>(null);
+
+  // What "auto" device will really do on this server [Slice F].
+  useEffect(() => {
+    let disposed = false;
+    apiFetch<{ gpu?: GpuInfo }>("/api/v1/system")
+      .then((body) => !disposed && setGpu(body.gpu ?? null))
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   // Variants of this model family, from the catalog (offered ones are selectable).
   useEffect(() => {
@@ -713,6 +726,22 @@ function ConfigureStep(props: ConfigureStepProps) {
           );
         })}
       </div>
+      {(() => {
+        const notice = deviceNotice(gpu, model.needs_gpu, config.dev_preset !== false);
+        const tone =
+          notice.kind === "cpu-warning"
+            ? "border-warning bg-warning/10 text-warning"
+            : "border-border bg-surface text-text-secondary";
+        return (
+          <p
+            role={notice.kind === "cpu-warning" ? "alert" : undefined}
+            data-testid={notice.kind === "cpu-warning" ? "cpu-warning" : "device-notice"}
+            className={`rounded-md border p-2 text-sm ${tone}`}
+          >
+            {notice.text}
+          </p>
+        );
+      })()}
       <p data-testid="run-target" className="text-sm text-text-secondary">
         Run on: <span className="font-semibold text-text">{runTarget}</span>
       </p>

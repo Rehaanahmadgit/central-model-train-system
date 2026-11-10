@@ -171,3 +171,8 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - Override merge fix first (`561eed7`), reproduced before the fix.
 - Token default ON with first-boot generation/0600/log-once, 401 on `/api` + WS, `--reset-token`, loud opt-out, UI TokenPrompt. Upload 413 messages + chunk cap. https-only/public-IP/redirect-capped checkpoint sources.
 - Tests: `test_auth.py` (+8), `test_uploads_api.py` (+2), `test_checkpoints.py` (override +2, SSRF +~20), `token-prompt.spec.ts` (mocked + real local instance on :8094, wizard e2e on an auth-disabled instance). `make verify` 339 passed. NOT RUN: Docker container, real internet download, TLS/proxy setups, DNS-rebinding test.
+
+## Slice F — device auto + config types (2026-11-10)
+- Audit: numeric types, Predictions 0.5, header Best/GPU n/a already in place; added a Run again test.
+- New: `/system` real GPU via subprocess probe (fixes a Verify hang found by the e2e run), Configure device notice/CPU warning, `device-logic.spec.ts`.
+- `make verify` 343 passed; Playwright 44 passed, 1 skipped (real-auth spec needs env). NOT RUN: real GPU host UI, Docker.

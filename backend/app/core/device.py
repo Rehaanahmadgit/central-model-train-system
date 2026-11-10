@@ -8,9 +8,12 @@ unavailable with an honest reason instead of guessing.
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
+from functools import lru_cache
 
 
 @dataclass(frozen=True)
@@ -124,3 +127,39 @@ def _gpu_name(index: int | None) -> str:
         return "GPU"
     lines = output.stdout.strip().splitlines()
     return lines[0].strip() if lines else "GPU"
+
+
+@lru_cache(maxsize=4)
+def probe_device(requested: str = "auto") -> dict[str, object]:
+    """Resolve the device in a throw-away subprocess, result cached.
+
+    The API process must never import torch itself: the verification pool forks
+    from it, and forking after torch's thread pools exist can deadlock (seen: the
+    Verify step hung once /system imported torch). Slice F.
+    """
+    try:
+        output = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, "-m", "app.core.device", requested],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        data = json.loads(output.stdout.strip().splitlines()[-1])
+        if isinstance(data, dict):
+            return data
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        pass
+    return {
+        "kind": "cpu",
+        "index": None,
+        "name": "CPU",
+        "torch_installed": False,
+        "cuda_available": False,
+        "reason": "device probe failed; assuming CPU",
+        "memory_gb": None,
+    }
+
+
+if __name__ == "__main__":  # pragma: no cover - used by probe_device
+    print(json.dumps(resolve_device(sys.argv[1] if len(sys.argv) > 1 else "auto").as_dict()))

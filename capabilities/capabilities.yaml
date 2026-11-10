@@ -20,7 +20,8 @@ capabilities:
   - {id: upload_cap_413, status: tested, evidence: "test_uploads_api.py"}
   - {id: source_uri_ssrf_guard, status: tested, evidence: "test_checkpoints.py (parametrized blocked ranges, redirects); DNS rebinding race VERIFY"}
   - {id: catalog_override_merge, status: tested, evidence: "test_checkpoints.py, commit 561eed7"}
-  - {id: device_auto_banner, status: planned, evidence: "Slice F"}
+  - {id: device_auto_banner, status: tested, evidence: "device-logic.spec.ts, wizard.spec.ts (mocked /system), test_system.py; real GPU host NOT RUN"}
+  - {id: config_numeric_types, status: tested, evidence: "run-summary-logic.spec.ts, test_training.py (Run again coerces)"}
   - {id: gpu_container_run, status: blocked, evidence: "NVIDIA Container Toolkit not installed on dev host"}
   - {id: published_image, status: blocked, evidence: "registry TODO(user)"}
   - {id: rtdetr_l_weights, status: blocked, evidence: "URL/sha256/licence TODO(user)"}

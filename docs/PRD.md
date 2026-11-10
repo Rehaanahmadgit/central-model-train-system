@@ -21,11 +21,11 @@ Hard constraints: no database (files under `TRAINHUB_HOME`), no user information
 | FR-10 | Predictions tab (GT vs predictions, worst samples, confidence filter) | verified | user ran it; `predictions-logic.spec.ts` |
 | FR-11 | Weights download (`weights.pth`) | verified | user ran it |
 | FR-12 | Run again / Edit & run with prefilled config | verified | user ran Run again |
-| FR-13 | Numeric config saved as numbers; Predictions default confidence 0.5; header "Best"; GPU % n/a on finished run | tested | commit `a977d7e`, `run-summary-logic.spec.ts` (Slice F re-checks) |
+| FR-13 | Numeric config saved as numbers (Configure, Edit & run, Run again — server also coerces old string values); Predictions default confidence 0.5; header "Best" falls back to evaluation; GPU % n/a on a finished run | tested | commit `a977d7e` + Slice F: `run-summary-logic.spec.ts`, `test_training.py::test_run_again_coerces_string_config_from_an_old_run` |
 | FR-14 | Shared TrainEngine (pause/stop/NaN guard/exact resume) | tested | A2 (`7c4dbef`), `test_engine.py`, golden test |
 | FR-15 | Access token ON by default (generated on first boot into `<home>/access-token` 0600, printed once in logs); `/api` + WS 401 without it; `--reset-token`; explicit loud opt-out `TRAINHUB_AUTH_DISABLED`; UI token prompt with clear 401 banner | tested | Slice E, `test_auth.py`, `token-prompt.spec.ts` (mocked + real local instance) |
 | FR-20 | Upload size cap with clear 413 (declared size and per-chunk); checkpoint `source_uri` https-only, non-public addresses blocked, redirects capped + re-checked | tested | Slice E, `test_uploads_api.py`, `test_checkpoints.py`; DNS-rebinding race VERIFY (sha256 still rejects wrong content) |
 | FR-21 | Catalog override merges field by field (old `license`/TODO values ignored with a warning) | tested | `test_checkpoints.py`, commit `561eed7` |
-| FR-16 | Configure device auto: GPU → full preset; no GPU → CPU + warning banner | planned | Slice F |
+| FR-16 | Configure device auto: GPU → full preset + GPU name/VRAM shown; no GPU → CPU + clear warning banner (`--gpus all` hint for GPU-only models); `/system` reports the real GPU | tested | Slice F, `device-logic.spec.ts`, `wizard.spec.ts`, `test_system.py`; banner on a real GPU host NOT RUN (venv torch is the CPU build) |
 | FR-17 | CNN + RandomForest plugins (image classification, tabular) | tested | S8, `make verify` |
 | FR-18 | Public image published (cpu/gpu tags) | blocked | registry namespace `TODO(user)`; container GPU run blocked on host (no NVIDIA Container Toolkit) |

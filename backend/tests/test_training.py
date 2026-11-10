@@ -438,6 +438,7 @@ def test_cnn_patience_zero_disables_early_stopping(tmp_path: Path) -> None:
 
 # --- config types (D124) ----------------------------------------------------
 
+
 def test_normalize_config_coerces_form_strings() -> None:
     from app.services.runs import normalize_config
 
@@ -533,3 +534,39 @@ def test_run_rejects_non_numeric_config(client: TestClient) -> None:
 
     assert response.status_code == 400, response.text
     assert response.json()["error"]["code"] == "INVALID_CONFIG"
+
+
+# --- Slice F: Run again keeps numeric types ------------------------------------
+
+
+def test_run_again_coerces_string_config_from_an_old_run(client: TestClient, home: Path) -> None:
+    """A parent run saved by the old wizard (string numbers) must retry with real numbers."""
+    from app.storage.atomic import atomic_write_json
+
+    run_id = _start_run(
+        client,
+        entries=build_classification(per_class=3, classes=("cat", "dog"), size=(32, 32)),
+        model_family="cnn",
+        config={"epochs": 1},
+    )
+    client.post(f"/api/v1/runs/{run_id}/stop")
+    deadline = time.monotonic() + 60
+    while client.get(f"/api/v1/runs/{run_id}").json()["state"] not in (
+        "completed",
+        "failed",
+        "stopped",
+    ):
+        assert time.monotonic() < deadline
+        time.sleep(0.1)
+    path = home / "runs" / run_id / "run.json"
+    record = read_json(path)
+    record["config"]["epochs"] = "2"
+    record["config"]["lr"] = "0.01"
+    atomic_write_json(path, record)
+
+    retried = client.post(f"/api/v1/runs/{run_id}/retry", json={})
+    assert retried.status_code == 202, retried.text
+    new_config = read_json(home / "runs" / retried.json()["id"] / "run.json")["config"]
+    assert new_config["epochs"] == 2 and isinstance(new_config["epochs"], int)
+    assert new_config["lr"] == 0.01 and isinstance(new_config["lr"], float)
+    client.post(f"/api/v1/runs/{retried.json()['id']}/stop")

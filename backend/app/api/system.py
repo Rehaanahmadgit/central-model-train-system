@@ -1,7 +1,7 @@
 """System health API [doc 05 §7].
 
-GPU values show "No GPU detected" when pynvml is unavailable [doc 14 §3.2];
-real GPU metrics arrive with the training slices.
+``gpu`` comes from the same device resolver the trainers use, so the Configure
+step can say honestly whether training will run on a GPU or on the CPU.
 """
 
 import shutil
@@ -11,6 +11,7 @@ from typing import Any, cast
 from fastapi import APIRouter, Request
 
 from app.core.config import Settings
+from app.core.device import probe_device
 from app.storage.atomic import read_json
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -43,6 +44,19 @@ def _scan_jobs(home: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     return running, queued
 
 
+def _gpu_info(settings: Settings) -> dict[str, Any]:
+    # Subprocess probe: this process must not import torch (see probe_device).
+    device = probe_device(settings.device)
+    if device.get("kind") == "cuda":
+        return {
+            "available": True,
+            "name": device.get("name"),
+            "memory_gb": device.get("memory_gb"),
+            "message": f"GPU: {device.get('name')}",
+        }
+    return {"available": False, "message": "No GPU detected", "reason": device.get("reason")}
+
+
 @router.get("")
 def system(request: Request) -> dict[str, Any]:
     settings = cast(Settings, request.app.state.settings)
@@ -57,7 +71,7 @@ def system(request: Request) -> dict[str, Any]:
             "used_bytes": usage.used,
             "free_bytes": usage.free,
         },
-        "gpu": {"available": False, "message": "No GPU detected"},
+        "gpu": _gpu_info(settings),
         "recovery_warnings": recovery_warnings,
         "security": dict(getattr(request.app.state, "security", {})),
     }

@@ -222,3 +222,10 @@ Every decision with date, reason, source doc section. `PENDING` = proposed, awai
 | D151 | `trainhub --reset-token` rewrites the file and prints the new token; the running server keeps the old one until the container restarts. Tests set `TRAINHUB_AUTH_DISABLED` and `TRAINHUB_ALLOW_INSECURE_SOURCES` through an autouse fixture; the Slice E tests remove them. | Slice E item 1 | active |
 | D152 | Upload cap: existing declared-size 413 now states size and limit; each chunk is capped by `chunk_size_bytes` (Content-Length and streamed) with 413 `CHUNK_TOO_LARGE`. Default cap stays 50 GiB (operator setting). | Slice E item 2 | active |
 | D153 | Checkpoint sources: https only, every resolved address must be globally routable (IPv4-mapped IPv6 unwrapped), ≤ 3 redirects each re-validated; refusal = `CHECKPOINT_SOURCE_BLOCKED` with Import from file. `TRAINHUB_ALLOW_INSECURE_SOURCES` exists only for tests/dev. Residual risk VERIFY: DNS rebinding between check and connect; sha256 still rejects wrong content. `source_type: file` unchanged. | Slice E item 2 | active |
+
+## 2026-11-10 — Slice F: device auto + config types
+| # | Decision | Reason / source | status |
+|---|---|---|---|
+| D154 | Items already fixed in `a977d7e` (numeric config, Predictions 0.5, header Best, GPU n/a) were re-checked, not redone; added a backend test that Run again coerces string numbers saved by the old wizard. | Slice F audit | active |
+| D155 | `/api/v1/system` `gpu` was hard-coded "No GPU detected". It now comes from `probe_device`, a cached subprocess, because importing torch in the API process makes the forked verification pool hang (reproduced: Verify showed "No checks yet" once the SPA's `/system` call imported torch). A regression test asserts `torch` is not in `sys.modules` after `/system`. | found by the real e2e run | active |
+| D156 | Configure shows "auto → GPU (name, GB)" or a warning banner when no GPU: CPU + dev preset, with a `--gpus all` hint for GPU-only models. The preset itself still comes from the verifier (`full` on GPU, `dev` otherwise). | Slice F item | active |

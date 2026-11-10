@@ -108,6 +108,13 @@ function makeYoloZip(): Buffer {
 // report route so the test is deterministic on CPU).
 test("wizard prefills Configure from recommended_hparams and checkpoint", async ({ page }) => {
   let postedPreset: string | null = null;
+  await page.route("**/api/v1/system", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      json: { ...body, gpu: { available: true, name: "RTX Mock", memory_gb: 4, message: "GPU: RTX Mock" } },
+    });
+  });
   await page.route("**/api/v1/verifications", async (route) => {
     if (route.request().method() === "POST") {
       const body = route.request().postDataJSON() as { preset?: string };
@@ -188,6 +195,8 @@ test("wizard prefills Configure from recommended_hparams and checkpoint", async 
   const devPreset = page.locator("label").filter({ hasText: "dev_preset" }).locator("input");
   await expect(devPreset).not.toBeChecked();
   await expect(page.getByTestId("run-target")).toContainText("GPU (full)");
+  await expect(page.getByTestId("device-notice")).toContainText("auto → GPU (RTX Mock");
+  await expect(page.getByTestId("cpu-warning")).toHaveCount(0);
   const checkpoint = page.locator('input[aria-label="Checkpoint catalog id"]');
   await expect(checkpoint).toHaveValue("rtdetr-r18vd@coco-1.0");
   // "Kyun chuna" is shown, and an override is acknowledged [Slice D].
@@ -200,6 +209,11 @@ test("wizard prefills Configure from recommended_hparams and checkpoint", async 
 // Scratch (or empty checkpoint) + frozen backbone cannot learn: Next is blocked with
 // a red message, and unblocks once freeze_backbone is off [Slice D].
 test("scratch with a frozen backbone blocks Configure Next", async ({ page }) => {
+  await page.route("**/api/v1/system", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({ json: { ...body, gpu: { available: false, message: "No GPU detected" } } });
+  });
   await page.route("**/api/v1/verifications/*", async (route) => {
     if (route.request().method() !== "GET") return route.continue();
     await route.fulfill({
@@ -231,6 +245,10 @@ test("scratch with a frozen backbone blocks Configure Next", async ({ page }) =>
   const ack = page.getByTestId("ack-warnings");
   if (await ack.isVisible()) await ack.check();
   await page.getByTestId("verify-next").click();
+
+  // No GPU: a clear CPU warning on Configure [Slice F].
+  await expect(page.getByTestId("cpu-warning")).toContainText("No GPU detected");
+  await expect(page.getByTestId("cpu-warning")).toContainText("--gpus all");
 
   // Nothing auto-selected + freeze_backbone default true => blocked.
   const freeze = page.locator("label").filter({ hasText: "freeze_backbone" }).locator("input");

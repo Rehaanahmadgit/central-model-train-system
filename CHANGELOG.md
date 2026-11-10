@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Slice F: Configure now says which device will be used (GPU name/VRAM, or a clear "no GPU, running on CPU" warning); the System endpoint reports the real GPU. Re-checked: numbers stay numbers on Run again / Edit & run, Predictions default to confidence 0.5, finished runs show Best and GPU n/a.
 - Slice E: access token is now on by default (generated on first boot, shown once in the logs, stored in `/data/access-token`; `trainhub --reset-token` to rotate). Uploads over the limit get a clear 413, and checkpoint downloads only use https from public hosts.
 - Fix: an old `catalog.override.yaml` no longer wipes the licence info of the default model entries.
 - Slice D: the best checkpoint is picked for you (with the reason shown) and downloaded when the run starts, with progress; download problems (offline, bad hash, full disk, interrupted) give a clear message and an Import from file option. A frozen backbone with no pretrained weights is now blocked instead of silently training nothing.
