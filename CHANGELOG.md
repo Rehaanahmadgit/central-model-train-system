@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Slice G1: new "Try it" tab on detection runs: drop up to 8 of your own images (not saved on the server) or use 6 sample images, see the boxes, filter by confidence/class and download the annotated PNG. Runs on CPU with a note when the GPU is busy training.
 - Slice H: the model list always comes from the app version you run (an old saved catalog no longer hides RT-DETR r18vd; the old file is kept as a backup). Models without a verified download can no longer be selected, and Next says why it is off. VRAM check only rejects when a real measurement exceeds your GPU. Starting a run no longer loads PyTorch inside the web server.
 - Slice F: Configure now says which device will be used (GPU name/VRAM, or a clear "no GPU, running on CPU" warning); the System endpoint reports the real GPU. Re-checked: numbers stay numbers on Run again / Edit & run, Predictions default to confidence 0.5, finished runs show Best and GPU n/a.
 - Slice E: access token is now on by default (generated on first boot, shown once in the logs, stored in `/data/access-token`; `trainhub --reset-token` to rotate). Uploads over the limit get a clear 413, and checkpoint downloads only use https from public hosts.

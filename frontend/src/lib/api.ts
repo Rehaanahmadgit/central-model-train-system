@@ -78,6 +78,13 @@ export async function apiUploadFile<T>(path: string, file: File): Promise<T> {
   return (await response.json()) as T;
 }
 
+/** POST multipart/form-data (the browser sets the boundary; never set Content-Type here). */
+export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
+  const response = await fetch(path, { method: "POST", headers: { ...authHeaders() }, body: form });
+  if (!response.ok) throw await failFrom(response, getAccessToken() !== null, "Request failed");
+  return (await response.json()) as T;
+}
+
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = { ...authHeaders() };
   if (options.body && !(options.headers as Record<string, string> | undefined)?.["Content-Type"]) {

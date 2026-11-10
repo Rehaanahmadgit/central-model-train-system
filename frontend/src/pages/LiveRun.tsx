@@ -3,6 +3,7 @@ import { apiFetch, apiUploadFile, getAccessToken } from "../lib/api";
 import { failureView, waitingLabel, type RunFailure, type Waiting } from "../lib/pretrained";
 import { ConnectionIndicator } from "../components/ConnectionIndicator";
 import { MetricChart } from "../components/MetricChart";
+import { TryItPanel } from "../components/TryItPanel";
 import { PredictionGallery } from "../components/PredictionGallery";
 import { useRunStream } from "../hooks/useRunStream";
 import { isTerminalRunState } from "../lib/runStreamLogic";
@@ -51,12 +52,13 @@ const FAILURE_HINTS: Record<string, string> = {
   UNKNOWN: "An unexpected error occurred. See the run log for the traceback.",
 };
 
-type RunTab = "live" | "evaluation" | "predictions";
+type RunTab = "live" | "evaluation" | "predictions" | "tryit";
 
 const TABS: { id: RunTab; label: string }[] = [
   { id: "live", label: "Live" },
   { id: "evaluation", label: "Evaluation" },
   { id: "predictions", label: "Predictions" },
+  { id: "tryit", label: "Try it" },
 ];
 
 const STATE_COLORS: Record<string, string> = {
@@ -466,7 +468,7 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
       )}
 
       <div role="tablist" aria-label="Run views" className="flex gap-1 border-b border-border">
-        {TABS.map((item) => (
+        {TABS.filter((item) => item.id !== "tryit" || info?.model_family === "rtdetr").map((item) => (
           <button
             key={item.id}
             role="tab"
@@ -482,6 +484,8 @@ export function LiveRun({ runId, theme, onBack, onNavigate, onEditRun }: LiveRun
       {tab === "evaluation" && <EvaluationPanel runId={runId} />}
 
       {tab === "predictions" && <PredictionGallery runId={runId} />}
+
+      {tab === "tryit" && <TryItPanel runId={runId} />}
 
       {tab === "live" && (
         <>

@@ -181,3 +181,8 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - Bug 1 reproduced (stale volume catalog: only rtdetr-l, 4 GB), fixed with `sync_catalog` (seed marker, backup, override on top).
 - Not-offered radio disabled + Next reason; r18vd VRAM 1.65 measured; torch-free API (start, env, create_run) with a subprocess regression test and a METADATA/plugin parity test.
 - NOT RUN: Docker upgrade with a real old volume, real GPU host.
+
+## Slice G1 — Try it, images (2026-11-10)
+- Backend: `/infer`, `/infer-samples`, subprocess worker, `predict_paths`/`detections_from_result`/`load_best_model` in rtdetr.py; `test_infer.py` (9 tests, real tiny CPU run).
+- Frontend: `TryItPanel`, shared `DetectionOverlay`, `lib/tryit.ts`, `apiPostForm`; `tryit.spec.ts` (mocked REST), `tryit-logic.spec.ts`.
+- G2 (video) NOT STARTED: waits for approval of opencv-python-headless. NOT RUN: GPU host, Docker, real user photos.

@@ -24,6 +24,8 @@ capabilities:
   - {id: catalog_image_source_of_truth, status: tested, evidence: "test_checkpoints.py (stale Oct-21 volume catalog reproduced, refreshed, backup kept, override on top); stale volume from a real Docker upgrade NOT RUN"}
   - {id: api_process_torch_free, status: tested, evidence: "test_training.py::test_api_process_stays_torch_free_through_gpu_start_and_training, test_registry_metadata_matches_plugins"}
   - {id: not_offered_variant_disabled, status: tested, evidence: "wizard.spec.ts"}
+  - {id: tryit_images, status: tested, evidence: "test_infer.py (known-answer vs predictions.json tol 1e-4, limits, traversal, 401, torch-free, temp cleanup), tryit.spec.ts, tryit-logic.spec.ts; GPU + real photos NOT RUN"}
+  - {id: tryit_video, status: planned, evidence: "waiting for dependency approval"}
   - {id: config_numeric_types, status: tested, evidence: "run-summary-logic.spec.ts, test_training.py (Run again coerces)"}
   - {id: gpu_container_run, status: blocked, evidence: "NVIDIA Container Toolkit not installed on dev host"}
   - {id: published_image, status: blocked, evidence: "registry TODO(user)"}

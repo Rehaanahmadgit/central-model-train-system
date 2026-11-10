@@ -237,3 +237,12 @@ Every decision with date, reason, source doc section. `PENDING` = proposed, awai
 | D158 | r18vd `min_vram_gb` = 1.65 (user-measured 1646 MB peak, 640 px, batch 4). 0 stays "not measured" = warn only, never reject. | Bug 3 | active |
 | D159 | Not-offered variants: radio disabled; Next carries the reason ("Next is disabled: ..."). | Bug 2 | active |
 | D160 | API process stays torch-free in three places, not one: `job_manager.start` (device), `_capture_env` (versions, via the probe), `create_run` (`get_plugin` -> `registry.METADATA`; METADATA gained rtdetr `score_threshold`; parity test added). Found by a subprocess regression test that kept failing until all three were fixed. | Bug 4 | active |
+
+## 2026-11-10 — Slice G1: Try it (images)
+| # | Decision | Reason / source | status |
+|---|---|---|---|
+| D161 | Inference runs in a throw-away subprocess (`inference/detect_worker`); the API never imports torch. Box maths shared with predictions.json (`detections_from_result`) so known-answer tests compare like with like. | Hang risk (D155, D160) | active |
+| D162 | No `python-multipart` (not installed, no approval for a new dependency): the multipart body is parsed with stdlib `email`, size-capped while streaming (8 x 10 MB + framing). | dependency rule | active |
+| D163 | GPU busy (training holds `locks/gpu-*.lock`) -> run on CPU and say so; never queue behind training. One detection at a time, a second gets 409 `INFER_BUSY`. | user rule: 409/queue or CPU fallback, say which | active |
+| D164 | Uploaded images only live in `<home>/tmp/infer-*` during the request and are deleted in `finally`; the browser keeps its own copy as an object URL for display. | no user data persisted | active |
+| D165 | Known-answer test matches detections as a set within 1e-4: an untrained dev-preset model has near-tied scores whose order can flip with float noise; values may not. | test honesty | active |

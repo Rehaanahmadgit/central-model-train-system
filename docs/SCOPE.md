@@ -11,6 +11,8 @@ Status values: verified · tested · code_only · planned · blocked.
 | Checkpoint resolver (sha256, lock, resume, import offline) | tested |
 | Live run page, pause/resume/stop, exact resume | tested |
 | Evaluation, Predictions tab, weights export | verified |
+| Try it tab: detection on uploaded images / samples (G1) | in (tested) |
+| Try it: video (G2) | planned: needs approval for opencv-python-headless |
 | Auto-select + auto-download + failure handling + Import from file (Slice D) | tested |
 | Token default ON, upload cap, SSRF guard (Slice E) | tested |
 | Device auto + config number types + header fixes (Slice F) | tested |

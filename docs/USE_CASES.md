@@ -3,6 +3,7 @@
 | Use case | Format | Model | Status |
 |---|---|---|---|
 | Object detection | YOLO txt + data.yaml | RT-DETR r18vd (COCO pretrained) | verified (GPU run, apple-orange val 0.873 / test 0.825) |
+| Object detection: try the trained model on new images | any trained rtdetr run | RT-DETR (best.ckpt) | tested (CPU, tiny run); real photos/GPU NOT RUN |
 | Object detection | COCO json (incl. Roboflow export) | RT-DETR | tested (fixtures); not user-run |
 | Image classification | image folder | CNN (tiny PyTorch) | tested |
 | Tabular | csv | RandomForest | tested |

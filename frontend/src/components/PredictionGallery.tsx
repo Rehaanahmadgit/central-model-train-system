@@ -44,7 +44,7 @@ const DEFAULT_CONFIDENCE = 0.5;
 const GT_COLOR = "#10b981"; // green: ground truth
 const PRED_COLOR = "#ef4444"; // red dashed: prediction
 
-function useDatasetImage(runId: string, path: string): { url: string | null; failed: boolean } {
+export function useDatasetImage(runId: string, path: string): { url: string | null; failed: boolean } {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -53,6 +53,7 @@ function useDatasetImage(runId: string, path: string): { url: string | null; fai
     let objectUrl: string | null = null;
     setUrl(null);
     setFailed(false);
+    if (!path) return; // nothing to fetch (e.g. a locally uploaded image)
     const headers: Record<string, string> = {};
     const token = getAccessToken();
     if (token) headers["X-Access-Token"] = token;
@@ -79,6 +80,99 @@ function useDatasetImage(runId: string, path: string): { url: string | null; fai
   return { url, failed };
 }
 
+/** GT (5 values, green solid) and prediction (6 values, red dashed) boxes over an image.
+ * Shared by the Predictions tab and "Try it": the box is always the last four values. */
+export function DetectionOverlay({
+  width,
+  height,
+  gt,
+  pred,
+  classNames,
+  confidence,
+  classFilter,
+  label,
+}: {
+  width: number;
+  height: number;
+  gt: number[][];
+  pred: number[][];
+  classNames: string[];
+  confidence: number;
+  classFilter: string;
+  label: string;
+}) {
+  const labelSize = Math.max(10, Math.round(width / 45));
+  const strokeWidth = Math.max(1.5, width / 320);
+  const matchesClass = (box: number[]): boolean =>
+    classFilter === "all" || classNames[classIdOf(box)] === classFilter;
+  const gtBoxes = gt.filter(matchesClass);
+  const predBoxes = pred.filter((box) => matchesClass(box) && scoreOf(box) >= confidence);
+  return (
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        aria-label={`overlay for ${label}`}
+        className="pointer-events-none absolute inset-0 h-full w-full"
+      >
+        {gtBoxes.map((box, index) => {
+          const rect = boxRect(box, width, height);
+          return (
+            <g key={`gt-${index}`} data-box="gt">
+              <rect
+                x={rect.x}
+                y={rect.y}
+                width={rect.w}
+                height={rect.h}
+                fill="none"
+                stroke={GT_COLOR}
+                strokeWidth={strokeWidth}
+              />
+              <text
+                x={rect.x + 2}
+                y={Math.max(labelSize, rect.y - 3)}
+                fontSize={labelSize}
+                fill={GT_COLOR}
+                stroke="#000"
+                strokeWidth={labelSize / 6}
+                paintOrder="stroke"
+              >
+                {classNames[classIdOf(box)] ?? classIdOf(box)}
+              </text>
+            </g>
+          );
+        })}
+        {predBoxes.map((box, index) => {
+          const rect = boxRect(box, width, height);
+          return (
+            <g key={`pred-${index}`} data-box="pred">
+              <rect
+                x={rect.x}
+                y={rect.y}
+                width={rect.w}
+                height={rect.h}
+                fill="none"
+                stroke={PRED_COLOR}
+                strokeWidth={strokeWidth}
+                strokeDasharray={`${labelSize / 2} ${labelSize / 3}`}
+              />
+              <text
+                x={rect.x + 2}
+                y={rect.y + rect.h + labelSize}
+                fontSize={labelSize}
+                fill={PRED_COLOR}
+                stroke="#000"
+                strokeWidth={labelSize / 6}
+                paintOrder="stroke"
+              >
+                {`${classNames[classIdOf(box)] ?? classIdOf(box)} ${scoreOf(box).toFixed(2)}`}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+  );
+}
+
 function PredictionCard({
   runId,
   image,
@@ -95,14 +189,6 @@ function PredictionCard({
   const { url, failed } = useDatasetImage(runId, image.path);
   const width = image.width || 1;
   const height = image.height || 1;
-  const labelSize = Math.max(10, Math.round(width / 45));
-  const strokeWidth = Math.max(1.5, width / 320);
-  const matchesClass = (box: number[]): boolean =>
-    classFilter === "all" || classNames[classIdOf(box)] === classFilter;
-  const gtBoxes = image.gt.filter(matchesClass);
-  const predBoxes = image.pred.filter(
-    (box) => matchesClass(box) && scoreOf(box) >= confidence,
-  );
 
   return (
     <figure className="overflow-hidden rounded-lg border border-border bg-surface">
@@ -115,68 +201,16 @@ function PredictionCard({
           </div>
         )}
         {url && (
-          <svg
-            viewBox={`0 0 ${width} ${height}`}
-            preserveAspectRatio="none"
-            aria-label={`overlay for ${image.path}`}
-            className="pointer-events-none absolute inset-0 h-full w-full"
-          >
-            {gtBoxes.map((box, index) => {
-              const rect = boxRect(box, width, height);
-              return (
-                <g key={`gt-${index}`} data-box="gt">
-                  <rect
-                    x={rect.x}
-                    y={rect.y}
-                    width={rect.w}
-                    height={rect.h}
-                    fill="none"
-                    stroke={GT_COLOR}
-                    strokeWidth={strokeWidth}
-                  />
-                  <text
-                    x={rect.x + 2}
-                    y={Math.max(labelSize, rect.y - 3)}
-                    fontSize={labelSize}
-                    fill={GT_COLOR}
-                    stroke="#000"
-                    strokeWidth={labelSize / 6}
-                    paintOrder="stroke"
-                  >
-                    {classNames[classIdOf(box)] ?? classIdOf(box)}
-                  </text>
-                </g>
-              );
-            })}
-            {predBoxes.map((box, index) => {
-              const rect = boxRect(box, width, height);
-              return (
-                <g key={`pred-${index}`} data-box="pred">
-                  <rect
-                    x={rect.x}
-                    y={rect.y}
-                    width={rect.w}
-                    height={rect.h}
-                    fill="none"
-                    stroke={PRED_COLOR}
-                    strokeWidth={strokeWidth}
-                    strokeDasharray={`${labelSize / 2} ${labelSize / 3}`}
-                  />
-                  <text
-                    x={rect.x + 2}
-                    y={rect.y + rect.h + labelSize}
-                    fontSize={labelSize}
-                    fill={PRED_COLOR}
-                    stroke="#000"
-                    strokeWidth={labelSize / 6}
-                    paintOrder="stroke"
-                  >
-                    {`${classNames[classIdOf(box)] ?? classIdOf(box)} ${scoreOf(box).toFixed(2)}`}
-                  </text>
-                </g>
-              );
-            })}
-          </svg>
+          <DetectionOverlay
+            width={width}
+            height={height}
+            gt={image.gt}
+            pred={image.pred}
+            classNames={classNames}
+            confidence={confidence}
+            classFilter={classFilter}
+            label={image.path}
+          />
         )}
       </div>
       <figcaption className="space-y-1 p-2 text-xs">

@@ -367,6 +367,96 @@ def _load_image(path: Path, imgsz: int, flip: bool) -> torch.Tensor:
     return tensor
 
 
+def detections_from_result(
+    result: dict[str, Any], imgsz: int, threshold: float
+) -> list[list[float]]:
+    """Post-processed network output -> ``[class_id, score, cx, cy, w, h]`` rows.
+
+    Boxes are normalized to the image (the network sees the whole image stretched to
+    ``imgsz``, so its pixel boxes divided by ``imgsz`` are the image's own unit
+    space). Shared by predictions.json and the "Try it" inference so both produce
+    identical numbers.
+    """
+    rows: list[list[float]] = []
+    for label, score, raw in zip(
+        result["labels"].tolist(),
+        result["scores"].tolist(),
+        result["boxes"].tolist(),
+        strict=False,
+    ):
+        if float(score) < threshold:
+            continue
+        x1, y1, x2, y2 = (float(v) / imgsz for v in raw)
+        rows.append(
+            [
+                float(int(label)),
+                round(float(score), 4),
+                round(_clamp01((x1 + x2) / 2), 4),
+                round(_clamp01((y1 + y2) / 2), 4),
+                round(_clamp01(x2 - x1), 4),
+                round(_clamp01(y2 - y1), 4),
+            ]
+        )
+    return rows
+
+
+def load_best_model(
+    run_dir: Path, num_classes: int, imgsz: int, device: torch.device
+) -> tuple[torch.nn.Module, Any]:
+    """Build the model and load ``checkpoints/best.ckpt`` (``weights_only=True``)."""
+    from app.vendor.rtdetr import RTDETRPostProcessor
+
+    best = run_dir / "checkpoints" / "best.ckpt"
+    if not best.is_file():
+        raise FileNotFoundError("this run has no best.ckpt (nothing to run detection with)")
+    payload = torch.load(best, map_location=device, weights_only=True)
+    state = payload.get("model_state") if isinstance(payload, dict) else None
+    if not isinstance(state, dict):
+        raise ValueError("best.ckpt has no model_state")
+    model = build_r18vd(num_classes, eval_spatial_size=(imgsz, imgsz))
+    model.load_state_dict(state)
+    model.to(device).eval()
+    postprocessor = RTDETRPostProcessor(
+        num_classes=num_classes, use_focal_loss=True, num_top_queries=300
+    )
+    return model, postprocessor
+
+
+def predict_paths(
+    model: torch.nn.Module,
+    postprocessor: Any,
+    paths: list[Path],
+    *,
+    imgsz: int,
+    device: torch.device,
+    threshold: float,
+    amp: bool = False,
+) -> list[dict[str, Any]]:
+    """Run detection on image files with the exact training-time preprocessing.
+
+    RGB, stretched to ``imgsz`` x ``imgsz``, [0, 1], no flip (same as ``_load_image``).
+    One image per forward pass, so a result never depends on its neighbours.
+    """
+    out: list[dict[str, Any]] = []
+    model.eval()
+    with torch.no_grad():
+        for path in paths:
+            width, height = _image_size(path)
+            tensor = _load_image(path, imgsz, flip=False).unsqueeze(0).to(device)
+            with torch.autocast("cuda", dtype=torch.float16, enabled=amp and device.type == "cuda"):
+                outputs = model(tensor)
+            sizes = torch.full((1, 2), imgsz, dtype=torch.float32, device=device)
+            result = postprocessor(outputs, sizes)[0]
+            out.append(
+                {
+                    "width": width,
+                    "height": height,
+                    "pred": detections_from_result(result, imgsz, threshold),
+                }
+            )
+    return out
+
+
 def _batches(items: list[Any], size: int) -> list[list[Any]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
@@ -874,26 +964,7 @@ class RTDetrTrainer(TrainerPlugin):
                 results = self._postprocessor(outputs, sizes)
                 for (path, boxes), result in zip(batch, results, strict=False):
                     gt = [[float(box[0]), *[float(v) for v in box[1:5]]] for box in boxes]
-                    predictions: list[list[float]] = []
-                    for label, score, raw in zip(
-                        result["labels"].tolist(),
-                        result["scores"].tolist(),
-                        result["boxes"].tolist(),
-                        strict=False,
-                    ):
-                        if float(score) < threshold:
-                            continue
-                        x1, y1, x2, y2 = (float(v) / self._imgsz for v in raw)
-                        predictions.append(
-                            [
-                                float(int(label)),
-                                round(float(score), 4),
-                                round(_clamp01((x1 + x2) / 2), 4),
-                                round(_clamp01((y1 + y2) / 2), 4),
-                                round(_clamp01(x2 - x1), 4),
-                                round(_clamp01(y2 - y1), 4),
-                            ]
-                        )
+                    predictions = detections_from_result(result, self._imgsz, threshold)
                     counts = match_counts(gt, predictions)
                     width, height = _image_size(path)
                     records.append(
