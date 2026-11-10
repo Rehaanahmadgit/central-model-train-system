@@ -771,12 +771,14 @@ function ConfigureStep(props: ConfigureStepProps) {
                     name="variant"
                     data-testid={`variant-${item.catalog_id}`}
                     checked={item.catalog_id === props.checkpointCatalogId}
+                    disabled={!item.offered}
+                    title={item.offered ? undefined : "Not offered yet: no verified download (sha256/URL)."}
                     onChange={() => props.onCheckpoint(item.catalog_id)}
                   />
-                  <span className="font-mono">{item.catalog_id}</span>
+                  <span className={`font-mono ${item.offered ? "" : "text-text-secondary"}`}>{item.catalog_id}</span>
                   <span className="text-xs text-text-secondary">
                     {item.variant}
-                    {item.offered ? "" : " — not offered yet"}
+                    {item.offered ? "" : " — not offered yet (no verified download; cannot be selected)"}
                   </span>
                 </label>
               </li>
@@ -816,6 +818,7 @@ function ConfigureStep(props: ConfigureStepProps) {
         )}
         {blocked && gateMessage && (
           <p role="alert" data-testid="licence-block" className="rounded-md border border-warning bg-warning/10 p-2 text-xs text-warning">
+            <span className="font-semibold">Next is disabled: </span>
             {gateMessage}
           </p>
         )}
@@ -823,7 +826,7 @@ function ConfigureStep(props: ConfigureStepProps) {
 
       <div className="flex gap-2">
         <button type="button" onClick={props.onBack} className="rounded-md border border-border px-4 py-2 text-sm hover:bg-bg">← Back</button>
-        <button type="button" data-testid="configure-next" onClick={props.onNext} disabled={blocked} className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50">Next →</button>
+        <button type="button" data-testid="configure-next" onClick={props.onNext} disabled={blocked} title={blocked && gateMessage ? gateMessage : undefined} className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50">Next →</button>
       </div>
     </div>
   );

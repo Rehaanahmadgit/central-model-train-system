@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from app.checkpoints.catalog import CatalogError, ensure_catalog, load_catalog
+from app.checkpoints.catalog import CatalogError, load_catalog, sync_catalog
 from app.checkpoints.resolver import CheckpointError, CheckpointIndex, CheckpointResolver
 from app.core.config import Settings
 from app.core.doctor import format_report, run_doctor
@@ -77,7 +77,7 @@ def _import(args: argparse.Namespace) -> int:
 def _list(args: argparse.Namespace) -> int:
     home = _resolve_home(args)
     try:
-        ensure_catalog(home)
+        sync_catalog(home)
         entries = load_catalog(home)
     except CatalogError as exc:
         _print({"error": {"code": "CATALOG_INVALID", "message": str(exc)}})

@@ -229,3 +229,11 @@ Every decision with date, reason, source doc section. `PENDING` = proposed, awai
 | D154 | Items already fixed in `a977d7e` (numeric config, Predictions 0.5, header Best, GPU n/a) were re-checked, not redone; added a backend test that Run again coerces string numbers saved by the old wizard. | Slice F audit | active |
 | D155 | `/api/v1/system` `gpu` was hard-coded "No GPU detected". It now comes from `probe_device`, a cached subprocess, because importing torch in the API process makes the forked verification pool hang (reproduced: Verify showed "No checks yet" once the SPA's `/system` call imported torch). A regression test asserts `torch` is not in `sys.modules` after `/system`. | found by the real e2e run | active |
 | D156 | Configure shows "auto → GPU (name, GB)" or a warning banner when no GPU: CPU + dev preset, with a `--gpus all` hint for GPU-only models. The preset itself still comes from the verifier (`full` on GPU, `dev` otherwise). | Slice F item | active |
+
+## 2026-11-10 — Slice H: catalog + wizard fixes
+| # | Decision | Reason / source | status |
+|---|---|---|---|
+| D157 | Image `default_catalog.yaml` is the source of truth. Volume `catalog.yaml` is a seed stamped with the sha of the default it came from (`catalog.yaml.seed`); a mismatch or missing stamp refreshes it at startup and keeps the old file as `catalog.yaml.bak-<sha8>`. Same-version hand edits are left alone; overrides merge field-wise on top. | Bug: a volume catalog from Oct 21 hid rtdetr-r18vd and kept a guessed "needs 4 GB" for rtdetr-l (reproduced) | active |
+| D158 | r18vd `min_vram_gb` = 1.65 (user-measured 1646 MB peak, 640 px, batch 4). 0 stays "not measured" = warn only, never reject. | Bug 3 | active |
+| D159 | Not-offered variants: radio disabled; Next carries the reason ("Next is disabled: ..."). | Bug 2 | active |
+| D160 | API process stays torch-free in three places, not one: `job_manager.start` (device), `_capture_env` (versions, via the probe), `create_run` (`get_plugin` -> `registry.METADATA`; METADATA gained rtdetr `score_threshold`; parity test added). Found by a subprocess regression test that kept failing until all three were fixed. | Bug 4 | active |

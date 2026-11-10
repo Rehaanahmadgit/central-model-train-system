@@ -176,3 +176,8 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - Audit: numeric types, Predictions 0.5, header Best/GPU n/a already in place; added a Run again test.
 - New: `/system` real GPU via subprocess probe (fixes a Verify hang found by the e2e run), Configure device notice/CPU warning, `device-logic.spec.ts`.
 - `make verify` 343 passed; Playwright 44 passed, 1 skipped (real-auth spec needs env). NOT RUN: real GPU host UI, Docker.
+
+## Slice H — catalog + wizard fixes (2026-11-10)
+- Bug 1 reproduced (stale volume catalog: only rtdetr-l, 4 GB), fixed with `sync_catalog` (seed marker, backup, override on top).
+- Not-offered radio disabled + Next reason; r18vd VRAM 1.65 measured; torch-free API (start, env, create_run) with a subprocess regression test and a METADATA/plugin parity test.
+- NOT RUN: Docker upgrade with a real old volume, real GPU host.

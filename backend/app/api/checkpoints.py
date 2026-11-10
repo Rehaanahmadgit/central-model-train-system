@@ -15,7 +15,7 @@ from typing import Any, cast
 
 from fastapi import APIRouter, Request
 
-from app.checkpoints.catalog import CatalogEntry, CatalogError, ensure_catalog, load_catalog
+from app.checkpoints.catalog import CatalogEntry, CatalogError, load_catalog, sync_catalog
 from app.checkpoints.licences import LicenceStore
 from app.checkpoints.resolver import CheckpointError, CheckpointIndex, CheckpointResolver
 from app.core.config import Settings
@@ -97,7 +97,7 @@ def reload_catalog(request: Request) -> dict[str, Any]:
     """Re-read catalog.yaml + override [doc 05 §4]."""
     settings = _settings(request)
     try:
-        ensure_catalog(settings.home)
+        sync_catalog(settings.home)
         entries = load_catalog(settings.home)
     except CatalogError as exc:
         raise ApiError(422, "CATALOG_INVALID", str(exc)) from exc

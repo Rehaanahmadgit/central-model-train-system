@@ -359,8 +359,17 @@ test("licence card blocks Configure Next until the licence is accepted", async (
   expect(acceptedId).toBe("rtdetr-r18vd@coco-1.0");
   await expect(page.getByTestId("configure-next")).toBeEnabled();
 
-  // A variant with no verified download is listed but cannot be used.
-  await page.getByTestId("variant-rtdetr-l@1.0").check();
-  await expect(page.getByTestId("not-offered-chip")).toBeVisible();
+  // A variant with no verified download is listed but cannot be selected [Slice H].
+  const notOffered = page.getByTestId("variant-rtdetr-l@1.0");
+  await expect(notOffered).toBeDisabled();
+  await expect(page.getByTestId("variant-rtdetr-r18vd@coco-1.0")).toBeEnabled();
+  await expect(page.getByText("cannot be selected")).toBeVisible();
+  await expect(page.getByTestId("variant-rtdetr-r18vd@coco-1.0")).toBeChecked();
+  await expect(page.getByTestId("configure-next")).toBeEnabled();
+
+  // Typing a not-offered id by hand: Next is off and the reason is spelled out.
+  await page.getByLabel("Checkpoint catalog id").fill("rtdetr-l@1.0");
   await expect(page.getByTestId("configure-next")).toBeDisabled();
+  await expect(page.getByTestId("licence-block")).toContainText("Next is disabled");
+  await expect(page.getByTestId("licence-block")).toContainText("not offered yet");
 });

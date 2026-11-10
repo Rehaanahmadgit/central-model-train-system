@@ -20,7 +20,7 @@ from fixtures.make_datasets import (
 from helpers import upload_dataset
 from verification_fixtures import make_coco_multi_split_dataset
 
-from app.checkpoints.catalog import CatalogEntry, load_catalog
+from app.checkpoints.catalog import CatalogEntry, ensure_catalog, load_catalog
 from app.core.device import DeviceInfo, resolve_device
 from app.verification import VERIFIER_VERSION
 from app.verification.cache import cache_key, read_pointer
@@ -214,7 +214,7 @@ def test_catalog_missing_returns_empty_and_no_invented_ids(tmp_path: Path) -> No
 
 
 def test_catalog_ranking_follows_doc_rules(tmp_path: Path) -> None:
-    (tmp_path / "checkpoints").mkdir(parents=True, exist_ok=True)
+    ensure_catalog(tmp_path)  # seeded copy (carries the version stamp), then replaced
     catalog_file = tmp_path / "checkpoints" / "catalog.yaml"
     catalog_file.write_text(
         yaml.safe_dump(
@@ -254,7 +254,7 @@ def test_catalog_ranking_follows_doc_rules(tmp_path: Path) -> None:
 
 def test_catalog_present_flags_config_in_report(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    (home / "checkpoints").mkdir(parents=True)
+    ensure_catalog(home)  # seeded copy (carries the version stamp), then replaced
     (home / "checkpoints" / "catalog.yaml").write_text(
         yaml.safe_dump(
             [
@@ -529,7 +529,7 @@ def test_unverified_weights_licence_is_a_warning_in_reason() -> None:
 def test_derived_report_carries_auto_selected_and_reason(tmp_path: Path) -> None:
     raw = materialize(tmp_path / "raw", build_yolo())
     home = tmp_path / "home"
-    (home / "checkpoints").mkdir(parents=True)
+    ensure_catalog(home)  # seeded copy (carries the version stamp), then replaced
     (home / "checkpoints" / "catalog.yaml").write_text(
         yaml.safe_dump(
             [

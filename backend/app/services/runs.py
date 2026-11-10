@@ -19,7 +19,7 @@ from app.core.errors import ApiError
 from app.storage.atomic import atomic_write_json, read_json
 from app.storage.audit import append_audit
 from app.storage.ids import new_run_id
-from app.training.registry import get_plugin
+from app.training.registry import METADATA
 
 RUN_ID_PATTERN = re.compile(r"^run_[0-9]{8}_[0-9]{6}_[0-9a-f]{4}$")
 
@@ -189,11 +189,15 @@ def create_run(
             derived = report.get("derived")
             if isinstance(derived, dict):
                 task_type = derived.get("task_type")
-    plugin = get_plugin(model_family)
-    if plugin is None:
+    # Static metadata, not get_plugin(): importing the plugin pulls in torch, and the
+    # API process must stay torch-free so the verification pool can fork safely
+    # (Slice H; test_registry_metadata_matches_plugins keeps the two in step).
+    meta = METADATA.get(model_family)
+    if meta is None:
         raise ApiError(409, "UNKNOWN_MODEL_FAMILY", f"no trainer for model family {model_family!r}")
+    hparam_schema: dict[str, Any] = meta["hparam_schema"]
 
-    resolved_config = dict(plugin.default_hparams)
+    resolved_config = dict(meta["default_hparams"])
     resume_from: Path | None = None
     if parent_run_id:
         parent = read_json(home / "runs" / parent_run_id / "run.json")
@@ -213,12 +217,12 @@ def create_run(
                 )
     resolved_config.update(config or {})
     # Types are enforced at the one door every run goes through (D124).
-    resolved_config = normalize_config(resolved_config, plugin.hparam_schema)
+    resolved_config = normalize_config(resolved_config, hparam_schema)
 
     _guard_pretrained(
         home,
         resolved_config,
-        plugin.hparam_schema,
+        hparam_schema,
         checkpoint_catalog_id=None if from_scratch else checkpoint_catalog_id,
         resuming=resume_from is not None,
     )

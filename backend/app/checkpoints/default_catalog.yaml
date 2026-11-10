@@ -33,7 +33,8 @@
     url: "https://github.com/lyuwenyu/RT-DETR"
     verified: false
   commercial_use: unknown
-  min_vram_gb: 0
+  # MEASURED 2026-11 (user run): imgsz 640, batch 4 = 1646 MB peak -> 1.65 GB.
+  min_vram_gb: 1.65
   license: "code Apache-2.0; weights licence unverified"
   notes: "RT-DETR r18vd, COCO pretrained (the variant this app trains)."
 

@@ -106,6 +106,14 @@ METADATA: dict[str, dict[str, Any]] = {
                 "amp": {"type": "boolean", "default": False},
                 "freeze_backbone": {"type": "boolean", "default": True},
                 "clip_max_norm": {"type": "number", "minimum": 0, "default": 0.1},
+                "score_threshold": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "default": 0.25,
+                    "description": "Predictions below this confidence are dropped from "
+                    "artifacts/predictions.json (mAP itself always uses all queries).",
+                },
                 "dev_preset": {
                     "type": "boolean",
                     "default": True,
@@ -121,6 +129,7 @@ METADATA: dict[str, dict[str, Any]] = {
             "amp": False,
             "freeze_backbone": True,
             "clip_max_norm": 0.1,
+            "score_threshold": 0.25,
             "dev_preset": True,
         },
     },

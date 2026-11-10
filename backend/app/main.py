@@ -21,7 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.health import router as health_router
 from app.api.router import api_router
-from app.checkpoints.catalog import ensure_catalog
+from app.checkpoints.catalog import sync_catalog
 from app.core.auth import ensure_access_token, security_state, token_file, verify_token
 from app.core.config import Settings, get_settings
 from app.core.errors import ApiError
@@ -85,7 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             workspace_ok = True
             # Ship the default checkpoint catalog into the volume once [doc 14 §5].
             try:
-                ensure_catalog(resolved.home)
+                sync_catalog(resolved.home)
             except OSError:
                 logger.exception("could not install the default checkpoint catalog")
             # uvicorn's own startup line is suppressed (it shares a logger with

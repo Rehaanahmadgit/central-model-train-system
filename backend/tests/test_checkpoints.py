@@ -137,7 +137,8 @@ def test_shipped_catalog_never_claims_a_verified_weights_licence(tmp_path: Path)
     for entry in load_catalog(tmp_path):
         assert entry.weights_license["verified"] is False
         assert entry.commercial_use == "unknown"
-        assert entry.min_vram_gb == 0  # 0 = not measured
+        # 0 = not measured; only r18vd is measured (640 px, batch 4 = 1646 MB peak)
+        assert entry.min_vram_gb == (1.65 if entry.name == "rtdetr-r18vd" else 0)
 
 
 def test_shipped_catalog_schema_has_every_required_field() -> None:
@@ -824,3 +825,88 @@ def test_shipped_catalog_source_passes_scheme_rule(strict_sources: None, tmp_pat
     entries = load_catalog(tmp_path)
     offered = [e for e in entries if e.offered]
     assert offered and all(e.source_uri.startswith("https://") for e in offered)
+
+
+# --- Slice H: image catalog is the source of truth ----------------------------
+
+
+def _stale_volume_catalog(home: Path) -> Path:
+    """An Oct-21 style volume catalog: no r18vd, rtdetr-l with a guessed 4 GB."""
+    path = home / "checkpoints" / "catalog.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "rtdetr-l",
+                    "version": "1.0",
+                    "model_family": "rtdetr",
+                    "task_types": ["object_detection"],
+                    "source_uri": "TODO(user): url",
+                    "sha256": "TODO(user): sha",
+                    "min_vram_gb": 4,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_stale_volume_catalog_does_not_hide_the_shipped_variants(tmp_path: Path) -> None:
+    from app.checkpoints.catalog import sync_catalog
+
+    _stale_volume_catalog(tmp_path)
+    assert sync_catalog(tmp_path) == "refreshed"
+    ids = {entry.catalog_id: entry for entry in load_catalog(tmp_path)}
+    assert "rtdetr-r18vd@coco-1.0" in ids and ids["rtdetr-r18vd@coco-1.0"].offered
+    assert ids["rtdetr-l@1.0"].min_vram_gb == 0, "the guessed 4 GB is gone"
+    backups = list((tmp_path / "checkpoints").glob("catalog.yaml.bak-*"))
+    assert len(backups) == 1, "old file kept, not deleted"
+    assert sync_catalog(tmp_path) == "current"
+
+
+def test_refresh_keeps_a_field_wise_override_on_top(tmp_path: Path) -> None:
+    from app.checkpoints.catalog import catalog_paths, find_entry, sync_catalog
+
+    _stale_volume_catalog(tmp_path)
+    _, override = catalog_paths(tmp_path)
+    override.write_text(
+        yaml.safe_dump([{"name": "rtdetr-r18vd", "version": "coco-1.0", "min_vram_gb": 2.5}]),
+        encoding="utf-8",
+    )
+    sync_catalog(tmp_path)
+    entry = find_entry(load_catalog(tmp_path), "rtdetr-r18vd@coco-1.0")
+    assert entry is not None and entry.min_vram_gb == 2.5 and entry.offered
+
+
+def test_same_version_volume_edits_are_not_clobbered(tmp_path: Path) -> None:
+    from app.checkpoints.catalog import sync_catalog
+
+    ensure_catalog(tmp_path)
+    path = tmp_path / "checkpoints" / "catalog.yaml"
+    path.write_text("[]\n", encoding="utf-8")
+    assert sync_catalog(tmp_path) == "current"
+    assert path.read_text() == "[]\n"
+
+
+def test_r18vd_vram_is_measured_and_unmeasured_never_rejects(tmp_path: Path) -> None:
+    from app.core.device import DeviceInfo
+    from app.verification.recommend import rank_checkpoints
+
+    gpu = DeviceInfo("cuda", 0, "GTX", True, True, "CUDA", memory_gb=3.68)
+    ensure_catalog(tmp_path)
+    ranked = rank_checkpoints(
+        load_catalog(tmp_path),
+        task_type="object_detection",
+        model_family="rtdetr",
+        bucket="small",
+        device=gpu,
+        num_classes=2,
+    )
+    by_id = {item["catalog_id"]: item for item in ranked}
+    r18 = by_id["rtdetr-r18vd@coco-1.0"]
+    assert r18["eligible"] and ranked[0]["catalog_id"] == "rtdetr-r18vd@coco-1.0"
+    large = by_id["rtdetr-l@1.0"]
+    assert not any("VRAM" in reason for reason in large["rejected"]), "unmeasured = warn only"
+    assert "VRAM need not measured" in large["warnings"]

@@ -570,3 +570,63 @@ def test_run_again_coerces_string_config_from_an_old_run(client: TestClient, hom
     assert new_config["epochs"] == 2 and isinstance(new_config["epochs"], int)
     assert new_config["lr"] == 0.01 and isinstance(new_config["lr"], float)
     client.post(f"/api/v1/runs/{retried.json()['id']}/stop")
+
+
+@pytest.mark.slow
+def test_api_process_stays_torch_free_through_gpu_start_and_training(tmp_path: Path) -> None:
+    """Slice H regression: job_manager.start used resolve_device (imports torch in the
+    API process); forking the verification pool afterwards could hang. The GPU-family
+    start path now uses the subprocess probe, so verification still completes and the
+    API process never holds torch."""
+    import subprocess
+    import sys
+
+    tests_dir = Path(__file__).parent
+    script = f"""
+import sys, time
+sys.path.insert(0, r'{tests_dir}')
+from pathlib import Path
+from fastapi.testclient import TestClient
+from fixtures.make_datasets import build_classification, build_yolo, to_zip
+from helpers import upload_dataset
+from test_training import _start_run, _wait_run, _wait_verification
+from app.core.config import Settings
+from app.main import create_app
+
+with TestClient(create_app(Settings(home=Path(r'{tmp_path}') / 'home'))) as client:
+    # 1) a GPU-only family without dev_preset takes the probe path (CPU box -> clear failure)
+    rid = _start_run(client, entries=build_yolo(), model_family='rtdetr',
+                     config={{'dev_preset': False, 'freeze_backbone': False}})
+    run = _wait_run(client, rid, timeout=120)
+    assert run['state'] == 'failed' and run['failure']['reason'] == 'GPU_UNAVAILABLE', run
+    # 2) a real training run and a fresh verification still complete afterwards
+    rid = _start_run(client, entries=build_classification(per_class=8, size=(32, 32)),
+                     model_family='cnn', config={{'epochs': 1, 'batch_size': 4}})
+    assert _wait_run(client, rid, timeout=180)['state'] == 'completed'
+    print('TORCH_IN_API=' + str('torch' in sys.modules))
+"""
+    out = subprocess.run(  # noqa: S603 - fixed argv
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=420,
+        check=False,
+        cwd=str(tests_dir.parent),
+    )
+    assert "TORCH_IN_API=False" in out.stdout, out.stdout[-1500:] + out.stderr[-1500:]
+
+
+def test_registry_metadata_matches_plugins() -> None:
+    """METADATA (torch-free, used by the API) must agree with the real plugins."""
+    from app.training import registry
+
+    for family, meta in registry.METADATA.items():
+        plugin = registry.get_plugin(family)
+        assert plugin is not None
+        meta_props = meta["hparam_schema"]["properties"]
+        for key, prop in plugin.hparam_schema["properties"].items():
+            assert key in meta_props, f"{family}.{key} missing from METADATA"
+            for field in ("type", "minimum", "maximum", "default"):
+                assert meta_props[key].get(field) == prop.get(field), f"{family}.{key}.{field}"
+        for key, value in plugin.default_hparams.items():
+            assert meta["default_hparams"].get(key) == value, f"{family} default {key}"

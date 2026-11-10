@@ -22,7 +22,7 @@ from typing import Any
 
 from app.checkpoints.resolver import CheckpointError, CheckpointResolver
 from app.core.config import Settings
-from app.core.device import resolve_device
+from app.core.device import DeviceInfo, probe_device
 from app.core.states import can_transition, transition
 from app.realtime.broadcaster import EventBroadcaster
 from app.realtime.events import RunEventLog
@@ -101,7 +101,10 @@ class JobManager:
         gpu_index: int | None = None
         if needs_gpu:
             # Clear error instead of a silent CPU fallback [doc 14 §3.3].
-            device = resolve_device(self._settings.device)
+            # Subprocess probe: the API process must never import torch (Slice H).
+            device = DeviceInfo.from_dict(
+                await asyncio.to_thread(probe_device, self._settings.device)
+            )
             if not device.is_gpu:
                 self._set_state(
                     run_id,
@@ -123,7 +126,8 @@ class JobManager:
             await self._slots.acquire()
         try:
             self._set_state(run_id, "preparing", record)
-            env = self._capture_env(record)
+            probe = await asyncio.to_thread(probe_device, self._settings.device)
+            env = self._capture_env(record, probe)
             self._write_env(run_id, env)
             await self._resolve_checkpoint(run_id, record)
             process = await self._spawn(run_id, gpu_index=gpu_index)
@@ -234,21 +238,15 @@ class JobManager:
         with FileLock(self._home / "locks" / f"run-{run_id}.lock"):
             atomic_write_json(path, record)
 
-    def _capture_env(self, record: dict[str, Any]) -> dict[str, Any]:
+    def _capture_env(self, record: dict[str, Any], probe: dict[str, object]) -> dict[str, Any]:
         del record
-        torch_version = None
-        cuda_version = None
-        try:
-            import torch
-
-            torch_version = str(torch.__version__)
-            cuda_version = str(torch.version.cuda) if torch.cuda.is_available() else None
-        except Exception:  # pragma: no cover - torch may be absent in future images
-            pass
+        # Versions come from the device-probe subprocess: the API process stays torch-free.
+        torch_version = probe.get("torch_version")
+        cuda_version = probe.get("cuda_version")
         return {
             "python": sys.version.split()[0],
-            "torch": torch_version,
-            "cuda": cuda_version,
+            "torch": torch_version if isinstance(torch_version, str) else None,
+            "cuda": cuda_version if isinstance(cuda_version, str) else None,
             "device": self._settings.device,
             "git_commit": _git_commit(),
             "hostname": socket.gethostname(),

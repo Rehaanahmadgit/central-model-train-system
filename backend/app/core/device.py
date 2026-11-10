@@ -30,6 +30,20 @@ class DeviceInfo:
     def is_gpu(self) -> bool:
         return self.kind == "cuda"
 
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> DeviceInfo:
+        index = data.get("index")
+        memory = data.get("memory_gb")
+        return cls(
+            kind=str(data.get("kind") or "cpu"),
+            index=int(index) if isinstance(index, int | float) else None,
+            name=str(data.get("name") or "CPU"),
+            torch_installed=bool(data.get("torch_installed")),
+            cuda_available=bool(data.get("cuda_available")),
+            reason=str(data.get("reason") or ""),
+            memory_gb=float(memory) if isinstance(memory, int | float) else None,
+        )
+
     def as_dict(self) -> dict[str, object]:
         return {
             "kind": self.kind,
@@ -161,5 +175,20 @@ def probe_device(requested: str = "auto") -> dict[str, object]:
     }
 
 
+def _probe_main(requested: str) -> dict[str, object]:  # pragma: no cover - probe subprocess
+    data = resolve_device(requested).as_dict()
+    data["torch_version"] = None
+    data["cuda_version"] = None
+    if importlib.util.find_spec("torch") is not None:
+        try:
+            torch = importlib.import_module("torch")
+            data["torch_version"] = str(torch.__version__)
+            if torch.cuda.is_available():
+                data["cuda_version"] = str(torch.version.cuda)
+        except Exception:
+            pass
+    return data
+
+
 if __name__ == "__main__":  # pragma: no cover - used by probe_device
-    print(json.dumps(resolve_device(sys.argv[1] if len(sys.argv) > 1 else "auto").as_dict()))
+    print(json.dumps(_probe_main(sys.argv[1] if len(sys.argv) > 1 else "auto")))

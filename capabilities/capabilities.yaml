@@ -21,6 +21,9 @@ capabilities:
   - {id: source_uri_ssrf_guard, status: tested, evidence: "test_checkpoints.py (parametrized blocked ranges, redirects); DNS rebinding race VERIFY"}
   - {id: catalog_override_merge, status: tested, evidence: "test_checkpoints.py, commit 561eed7"}
   - {id: device_auto_banner, status: tested, evidence: "device-logic.spec.ts, wizard.spec.ts (mocked /system), test_system.py; real GPU host NOT RUN"}
+  - {id: catalog_image_source_of_truth, status: tested, evidence: "test_checkpoints.py (stale Oct-21 volume catalog reproduced, refreshed, backup kept, override on top); stale volume from a real Docker upgrade NOT RUN"}
+  - {id: api_process_torch_free, status: tested, evidence: "test_training.py::test_api_process_stays_torch_free_through_gpu_start_and_training, test_registry_metadata_matches_plugins"}
+  - {id: not_offered_variant_disabled, status: tested, evidence: "wizard.spec.ts"}
   - {id: config_numeric_types, status: tested, evidence: "run-summary-logic.spec.ts, test_training.py (Run again coerces)"}
   - {id: gpu_container_run, status: blocked, evidence: "NVIDIA Container Toolkit not installed on dev host"}
   - {id: published_image, status: blocked, evidence: "registry TODO(user)"}

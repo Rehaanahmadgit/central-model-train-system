@@ -246,17 +246,61 @@ def catalog_paths(home: Path) -> tuple[Path, Path]:
     return root / "catalog.yaml", root / "catalog.override.yaml"
 
 
-def ensure_catalog(home: Path) -> Path:
-    """Copy the shipped defaults into the workspace once [doc 14 §5]."""
-    target, _ = catalog_paths(home)
-    if target.is_file():
-        return target
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _seed_marker(target: Path) -> Path:
+    return target.with_name("catalog.yaml.seed")
+
+
+def _seed(target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if DEFAULT_CATALOG.is_file():
         shutil.copyfile(DEFAULT_CATALOG, target)
+        _seed_marker(target).write_text(_sha(DEFAULT_CATALOG) + "\n", encoding="utf-8")
     else:  # pragma: no cover - shipping guard
         target.write_text("[]\n", encoding="utf-8")
+
+
+def ensure_catalog(home: Path) -> Path:
+    """Copy the shipped defaults into the workspace once [doc 14 §5]."""
+    target, _ = catalog_paths(home)
+    if not target.is_file():
+        _seed(target)
     return target
+
+
+def sync_catalog(home: Path) -> str:
+    """Make the image's default catalog the source of truth on every start [Slice H].
+
+    The volume ``catalog.yaml`` is only a seed. It is refreshed when it was seeded by
+    a different image version (marker sha differs) or by a legacy image (no marker).
+    The old file is kept as ``catalog.yaml.bak-<sha8>`` (never deleted); operator
+    changes belong in ``catalog.override.yaml``, which merges field-wise on top.
+    Returns "seeded" | "refreshed" | "current".
+    """
+    target, _ = catalog_paths(home)
+    if not target.is_file():
+        _seed(target)
+        return "seeded"
+    marker = _seed_marker(target)
+    try:
+        seeded_from = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        seeded_from = ""
+    if DEFAULT_CATALOG.is_file() and seeded_from != _sha(DEFAULT_CATALOG):
+        backup = target.with_name(f"catalog.yaml.bak-{_sha(target)[:8]}")
+        if not backup.exists():
+            shutil.copyfile(target, backup)
+        _seed(target)
+        logger.warning(
+            "catalog.yaml was from another image version; refreshed from the image "
+            "(old copy kept as %s). Put local changes in catalog.override.yaml.",
+            backup.name,
+        )
+        return "refreshed"
+    return "current"
 
 
 _NESTED = ("code_license", "weights_license")
@@ -298,8 +342,7 @@ def _merge_override(base: dict[str, Any], override: dict[str, Any], origin: str)
 def load_catalog(home: Path) -> list[CatalogEntry]:
     """Volume catalog, then the operator override merged field by field."""
     base_path, override_path = catalog_paths(home)
-    if not base_path.is_file():
-        ensure_catalog(home)
+    sync_catalog(home)
     raw: dict[str, dict[str, Any]] = {}
     origin: dict[str, str] = {}
     for path in (base_path, override_path):
