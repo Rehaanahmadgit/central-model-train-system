@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { apiFetch } from "./lib/api";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
+import { TokenPrompt } from "./components/TokenPrompt";
 import { RunsList } from "./pages/RunsList";
 import { VerifyDemo } from "./pages/VerifyDemo";
 import { Wizard } from "./pages/Wizard";
@@ -63,6 +64,7 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen bg-bg text-text">
+      <TokenPrompt />
       <Sidebar onSelect={navigate} />
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar theme={theme} onToggleTheme={toggleTheme} />

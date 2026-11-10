@@ -16,7 +16,10 @@ capabilities:
   - {id: checkpoint_auto_download, status: tested, evidence: "test_checkpoints.py failure matrix (local HTTP server + fake resolver); real GitHub download + UI progress NOT RUN"}
   - {id: import_from_file, status: tested, evidence: "test_checkpoints.py import_stream + PUT import API; browser upload NOT RUN"}
   - {id: frozen_backbone_guard, status: tested, evidence: "test_checkpoints.py, wizard.spec.ts, pretrained-logic.spec.ts"}
-  - {id: token_default_on, status: planned, evidence: "Slice E"}
+  - {id: token_default_on, status: tested, evidence: "test_auth.py (generate, 0600, 401, WS, opt-out, reset); token-prompt.spec.ts against a real local instance; Docker container NOT RUN"}
+  - {id: upload_cap_413, status: tested, evidence: "test_uploads_api.py"}
+  - {id: source_uri_ssrf_guard, status: tested, evidence: "test_checkpoints.py (parametrized blocked ranges, redirects); DNS rebinding race VERIFY"}
+  - {id: catalog_override_merge, status: tested, evidence: "test_checkpoints.py, commit 561eed7"}
   - {id: device_auto_banner, status: planned, evidence: "Slice F"}
   - {id: gpu_container_run, status: blocked, evidence: "NVIDIA Container Toolkit not installed on dev host"}
   - {id: published_image, status: blocked, evidence: "registry TODO(user)"}

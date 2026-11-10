@@ -716,3 +716,111 @@ def test_override_changes_only_the_fields_it_gives(tmp_path: Path) -> None:
     assert entry.weights_license["spdx"] == "Apache-2.0" and entry.weights_license["verified"]
     assert entry.weights_license["url"], "url comes from the default"
     assert entry.code_license["spdx"] == "Apache-2.0" and entry.size_bytes == 81001853
+
+
+# --- Slice E: SSRF guard on source_uri -----------------------------------------
+
+
+@pytest.fixture()
+def strict_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TRAINHUB_ALLOW_INSECURE_SOURCES", raising=False)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.com/w.pth",  # not https
+        "ftp://example.com/w.pth",
+        "https://127.0.0.1/w.pth",  # loopback
+        "https://localhost/w.pth",
+        "https://10.1.2.3/w.pth",  # private
+        "https://192.168.0.10/w.pth",
+        "https://172.16.0.1/w.pth",
+        "https://169.254.169.254/latest/meta-data/",  # cloud metadata (link-local)
+        "https://100.64.0.1/w.pth",  # CGNAT
+        "https://0.0.0.0/w.pth",
+        "https://[::1]/w.pth",
+        "https://[fe80::1]/w.pth",
+        "https://[::ffff:127.0.0.1]/w.pth",  # IPv4-mapped loopback
+        "https:///no-host",
+    ],
+)
+def test_ssrf_blocks_non_public_and_non_https(strict_sources: None, url: str) -> None:
+    from app.checkpoints.resolver import validate_source_url
+
+    with pytest.raises(CheckpointError) as excinfo:
+        validate_source_url("m@1", url)
+    assert excinfo.value.code == "CHECKPOINT_SOURCE_BLOCKED"
+    assert excinfo.value.details["can_import"] is True
+
+
+def test_ssrf_allows_public_https_host(
+    strict_sources: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.checkpoints.resolver import validate_source_url
+
+    monkeypatch.setattr(
+        "app.checkpoints.resolver.socket.getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("140.82.112.3", 443))],
+    )
+    validate_source_url("m@1", "https://github.com/x/w.pth")
+
+
+def test_ssrf_hostname_resolving_to_private_ip_is_blocked(
+    strict_sources: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.checkpoints.resolver import validate_source_url
+
+    monkeypatch.setattr(
+        "app.checkpoints.resolver.socket.getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("8.8.8.8", 443)), (2, 1, 6, "", ("10.0.0.7", 443))],
+    )
+    with pytest.raises(CheckpointError) as excinfo:
+        validate_source_url("m@1", "https://rebind.example/w.pth")
+    assert "non-public" in excinfo.value.message
+
+
+def test_redirects_are_capped_and_revalidated(
+    strict_sources: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import urllib.request
+
+    from app.checkpoints.resolver import MAX_REDIRECTS, _GuardedRedirects
+
+    monkeypatch.setattr(
+        "app.checkpoints.resolver.socket.getaddrinfo",
+        lambda host, *a, **k: [(2, 1, 6, "", (host if host[0].isdigit() else "140.82.112.3", 443))],
+    )
+    handler = _GuardedRedirects("m@1")
+    request = urllib.request.Request("https://github.com/a")
+    with pytest.raises(CheckpointError):  # redirect into the metadata address
+        handler.redirect_request(request, None, 302, "Found", {}, "https://169.254.169.254/latest/")
+    with pytest.raises(CheckpointError):  # redirect downgraded to http
+        handler.redirect_request(request, None, 302, "Found", {}, "http://github.com/a")
+    capped = _GuardedRedirects("m@1")
+    for _ in range(MAX_REDIRECTS):
+        capped.redirect_request(request, None, 302, "Found", {}, "https://github.com/b")
+    with pytest.raises(CheckpointError) as excinfo:
+        capped.redirect_request(request, None, 302, "Found", {}, "https://github.com/c")
+    assert "redirects" in excinfo.value.message
+
+
+def test_resolve_refuses_blocked_source_without_any_request(
+    strict_sources: None, tmp_path: Path, http_server: str
+) -> None:
+    _write_catalog(tmp_path, [_entry(http_server)])  # http://127.0.0.1:port
+    with pytest.raises(CheckpointError) as excinfo:
+        CheckpointResolver(tmp_path).resolve("tiny-model@1.0")
+    assert excinfo.value.code == "CHECKPOINT_SOURCE_BLOCKED"
+    assert _RangeHandler.ranges == [], "no request may reach the blocked host"
+    # offline import still works for the same entry
+    assert (
+        CheckpointResolver(tmp_path).import_stream("tiny-model@1.0", iter([PAYLOAD])).source
+        == "import"
+    )
+
+
+def test_shipped_catalog_source_passes_scheme_rule(strict_sources: None, tmp_path: Path) -> None:
+    entries = load_catalog(tmp_path)
+    offered = [e for e in entries if e.offered]
+    assert offered and all(e.source_uri.startswith("https://") for e in offered)

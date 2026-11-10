@@ -27,7 +27,12 @@ class Settings(BaseSettings):
     # Device abstraction, the only place device is decided [doc 14 §3.1].
     device: str = "auto"
     # Optional single shared access token; identifies nobody [doc 01 §3, doc 10 §2].
+    # When unset, the app generates one on first boot and keeps it in
+    # <home>/access-token (0600) [Slice E]. TRAINHUB_ACCESS_TOKEN overrides it.
     access_token: SecretStr | None = None
+    # Explicit, loud opt-out of authentication (TRAINHUB_AUTH_DISABLED=true). Only
+    # for trusted localhost/dev use; every boot logs a SECURITY warning.
+    auth_disabled: bool = False
     # Host the server is bound to; used for the DIST-07 warning (non-localhost
     # bind without a token). The Docker CMD sets 0.0.0.0; local dev stays 127.0.0.1.
     bind_host: str = "127.0.0.1"
@@ -67,6 +72,14 @@ class Settings(BaseSettings):
     # 60 s of silence → worker_lost failure.
     heartbeat_seconds: float = Field(default=5.0, gt=0)
     worker_lost_seconds: float = Field(default=60.0, gt=0)
+
+    @field_validator("access_token", mode="before")
+    @classmethod
+    def blank_token_means_unset(cls, value: object) -> object:
+        """``TRAINHUB_ACCESS_TOKEN=`` (compose passes an empty value) = not set."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("device")
     @classmethod

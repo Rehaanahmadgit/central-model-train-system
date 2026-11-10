@@ -19,9 +19,7 @@ from app.services import uploads
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 
-UPLOAD_ID_PATTERN = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-)
+UPLOAD_ID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 def _settings(request: Request) -> Settings:
@@ -57,7 +55,26 @@ async def put_chunk(
     request: Request,
     x_chunk_sha256: str | None = Header(default=None, alias="X-Chunk-Sha256"),
 ) -> dict[str, Any]:
-    data = await request.body()
+    # Never buffer more than one chunk: the declared Content-Length and the real
+    # stream are both capped, so a lying client cannot exhaust memory/disk [Slice E].
+    limit = _settings(request).chunk_size_bytes
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > limit:
+        raise ApiError(
+            413,
+            "CHUNK_TOO_LARGE",
+            f"chunk is {int(declared)} bytes; the maximum chunk size is {limit} bytes",
+        )
+    buffer = bytearray()
+    async for block in request.stream():
+        buffer.extend(block)
+        if len(buffer) > limit:
+            raise ApiError(
+                413,
+                "CHUNK_TOO_LARGE",
+                f"chunk exceeds the maximum chunk size of {limit} bytes",
+            )
+    data = bytes(buffer)
     return uploads.put_chunk(
         _settings(request).home,
         _settings(request),

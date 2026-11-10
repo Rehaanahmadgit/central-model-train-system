@@ -64,6 +64,7 @@ const CHECKPOINT_TITLES: Record<string, string> = {
   CHECKPOINT_SHA_MISMATCH: "Downloaded file failed the sha256 check",
   CHECKPOINT_DISK_FULL: "Not enough free disk for the checkpoint",
   CHECKPOINT_PARTIAL: "Checkpoint download stopped part-way",
+  CHECKPOINT_SOURCE_BLOCKED: "The download source was refused (https and public hosts only)",
   CHECKPOINT_DOWNLOAD_FAILED: "Checkpoint download failed",
   LICENCE_NOT_ACCEPTED: "Licence not accepted",
 };

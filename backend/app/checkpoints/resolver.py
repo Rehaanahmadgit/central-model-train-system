@@ -12,8 +12,10 @@ not need an HTTP client dependency.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import os
 import shutil
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -66,6 +68,69 @@ def _sha256_file(path: Path) -> str:
         for block in iter(lambda: handle.read(CHUNK), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+MAX_REDIRECTS = 3
+
+
+def _insecure_sources_allowed() -> bool:
+    """Test/dev escape hatch (env). Never set it on a public instance."""
+    return os.environ.get("TRAINHUB_ALLOW_INSECURE_SOURCES", "").lower() in ("1", "true", "yes")
+
+
+def _blocked(catalog_id: str, why: str) -> CheckpointError:
+    return CheckpointError(
+        "CHECKPOINT_SOURCE_BLOCKED",
+        f"download source for {catalog_id!r} refused: {why}. "
+        "Use Import from file with weights you downloaded yourself.",
+        {"catalog_id": catalog_id, "can_import": True},
+    )
+
+
+def validate_source_url(catalog_id: str, url: str) -> None:
+    """SSRF guard: https only, and every resolved address must be publicly routable.
+
+    Blocks loopback, private (RFC 1918), link-local (incl. the 169.254.169.254 cloud
+    metadata address), CGNAT, multicast, reserved and unspecified ranges, IPv4-mapped
+    IPv6 included. Residual risk (VERIFY): DNS rebinding between this check and the
+    connect; the sha256 check still rejects anything that is not the expected file.
+    """
+    if _insecure_sources_allowed():
+        return
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise _blocked(catalog_id, f"only https sources are allowed (got {parsed.scheme!r})")
+    host = parsed.hostname
+    if not host:
+        raise _blocked(catalog_id, "the URL has no host")
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        # Cannot resolve = offline (or a bad name): let the normal download path report it.
+        raise urllib.error.URLError(exc) from exc
+    for info in infos:
+        address = ipaddress.ip_address(str(info[4][0]).split("%")[0])
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        if not address.is_global or address.is_multicast:
+            raise _blocked(catalog_id, f"{host} resolves to a non-public address ({address})")
+
+
+class _GuardedRedirects(urllib.request.HTTPRedirectHandler):
+    """Cap redirects and re-validate every hop with the same rules."""
+
+    def __init__(self, catalog_id: str) -> None:
+        self._catalog_id = catalog_id
+        self._hops = 0
+
+    def redirect_request(  # type: ignore[no-untyped-def]
+        self, req, fp, code, msg, headers, newurl
+    ):
+        self._hops += 1
+        if self._hops > MAX_REDIRECTS:
+            raise _blocked(self._catalog_id, f"more than {MAX_REDIRECTS} redirects")
+        validate_source_url(self._catalog_id, newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 class CheckpointIndex:
@@ -454,11 +519,13 @@ class CheckpointResolver:
         parsed = urllib.parse.urlparse(entry.source_uri)
         if parsed.scheme not in ("http", "https"):
             raise OSError(f"unsupported URL scheme {parsed.scheme!r}")
+        validate_source_url(entry.catalog_id, entry.source_uri)
+        opener = urllib.request.build_opener(_GuardedRedirects(entry.catalog_id))
         offset = part.stat().st_size if part.is_file() else 0
         request = urllib.request.Request(entry.source_uri, method="GET")
         if offset:
             request.add_header("Range", f"bytes={offset}-")
-        with urllib.request.urlopen(request, timeout=self._timeout) as response:
+        with opener.open(request, timeout=self._timeout) as response:
             status = getattr(response, "status", 200)
             if offset and status != 206:
                 # Server ignored Range: restart from zero rather than corrupt the file.

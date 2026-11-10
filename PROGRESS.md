@@ -166,3 +166,8 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - Hard-filtered ranking + `auto_selected`/reason in the report; Configure pre-fills it and shows "kyun chuna"; override is acknowledged.
 - Run start: waiting state + progress, `.part` resume, FileLock wait event, precise failure codes, Import from file (API + UI), 409 for unaccepted licence at create, frozen-backbone guard (API + Wizard).
 - Tests: hard-filter + auto_select tests, failure matrix (offline, sha mismatch no retry, partial→resume, disk full 1.5×, lock wait, import, fake-resolver run failures), `pretrained-logic.spec.ts`, wizard e2e. NOT RUN: real GitHub download, GPU run, browser file upload to a real failed run.
+
+## Slice E — security (2026-11-10)
+- Override merge fix first (`561eed7`), reproduced before the fix.
+- Token default ON with first-boot generation/0600/log-once, 401 on `/api` + WS, `--reset-token`, loud opt-out, UI TokenPrompt. Upload 413 messages + chunk cap. https-only/public-IP/redirect-capped checkpoint sources.
+- Tests: `test_auth.py` (+8), `test_uploads_api.py` (+2), `test_checkpoints.py` (override +2, SSRF +~20), `token-prompt.spec.ts` (mocked + real local instance on :8094, wizard e2e on an auth-disabled instance). `make verify` 339 passed. NOT RUN: Docker container, real internet download, TLS/proxy setups, DNS-rebinding test.

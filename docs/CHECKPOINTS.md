@@ -11,3 +11,6 @@ Shipped: `backend/app/checkpoints/default_catalog.yaml`; override: `$TRAINHUB_HO
 
 Licence acceptance: `<home>/licences/accepted.json` stores `catalog_id`, `terms_sha256`, `accepted_at` only. Changed terms ask again.
 Offline: `trainhub checkpoints import <file> --catalog-id <name>` (sha256 verified, not licence-gated).
+
+Override file rules (`catalog.override.yaml`): merged **field by field** over the volume catalog (nested `code_license` / `weights_license` merge too); only the fields you give change. The retired free-text `license` key and any `TODO(user)` value are ignored with a warning, so an old override cannot blank a default entry.
+Download source rules: `source_uri` must be `https://`, resolve to public addresses only (no loopback/private/link-local/metadata), at most 3 redirects, each re-checked. Otherwise the run fails with `CHECKPOINT_SOURCE_BLOCKED` and **Import from file** still works. `source_type: file` (operator-mounted path) is not network access and stays allowed; its sha256 is still verified.

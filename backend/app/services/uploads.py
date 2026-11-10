@@ -75,7 +75,16 @@ def init_upload(
     if filename in ("", ".", "..") or Path(filename).name != filename:
         raise ApiError(400, "INVALID_FILENAME", "filename must be a plain file name")
     if size_bytes > settings.max_upload_size_bytes:
-        raise ApiError(413, "UPLOAD_TOO_LARGE", "upload exceeds the configured size limit")
+        limit_gb = settings.max_upload_size_bytes / 1024**3
+        raise ApiError(
+            413,
+            "UPLOAD_TOO_LARGE",
+            (
+                f"upload is {size_bytes / 1024**3:.2f} GB; this instance accepts at most "
+                f"{limit_gb:.2f} GB (operator setting TRAINHUB_MAX_UPLOAD_SIZE_BYTES)"
+            ),
+            {"size_bytes": size_bytes, "max_bytes": settings.max_upload_size_bytes},
+        )
     upload_id = new_upload_id()
     directory = _upload_dir(home, upload_id)
     directory.mkdir(parents=True, exist_ok=False)

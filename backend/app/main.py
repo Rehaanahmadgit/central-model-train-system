@@ -22,7 +22,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.health import router as health_router
 from app.api.router import api_router
 from app.checkpoints.catalog import ensure_catalog
-from app.core.auth import security_state, verify_token
+from app.core.auth import ensure_access_token, security_state, token_file, verify_token
 from app.core.config import Settings, get_settings
 from app.core.errors import ApiError
 from app.core.logging import reset_request_id, set_request_id, setup_logging
@@ -52,6 +52,8 @@ def _queued_run_ids(home: Path) -> list[str]:
         if isinstance(data, dict) and data.get("state") == "queued":
             queued.append((str(data.get("queued_at") or ""), path.parent.name))
     return [run_id for _, run_id in sorted(queued)]
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -94,7 +96,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 resolved.device,
                 "built" if resolved.frontend_dist else "dev",
             )
-            # DIST-07: loud warning when bound to a network with no access token.
+            # Auth is ON by default: load/generate the token BEFORE serving [Slice E].
+            try:
+                generated = ensure_access_token(resolved)
+            except OSError:
+                logger.exception("could not read/write the access token file; API stays locked")
+                generated = False
+            if generated and resolved.access_token is not None:
+                logger.warning(
+                    "FIRST BOOT: generated the access token (shown once): %s  -- it is also "
+                    "stored in %s (mode 0600). Lost it? run: trainhub --reset-token",
+                    resolved.access_token.get_secret_value(),
+                    token_file(resolved.home),
+                )
             security = security_state(resolved)
             application.state.security = security
             if security.get("warning"):
@@ -189,17 +203,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         path = request.url.path
         if request.method == "OPTIONS" or not path.startswith("/api/"):
             return await call_next(request)
-        if verify_token(resolved, request.headers.get("X-Access-Token")):
+        provided = request.headers.get("X-Access-Token")
+        if verify_token(resolved, provided):
             return await call_next(request)
+        if provided:
+            code, message = (
+                "ACCESS_TOKEN_INVALID",
+                "That access token was rejected (401). Use the token printed in the docker "
+                "logs on first boot, or read it from /data/access-token.",
+            )
+        else:
+            code, message = (
+                "ACCESS_TOKEN_REQUIRED",
+                "This instance requires the access token (found in /data/access-token).",
+            )
         return JSONResponse(
-            status_code=401,
-            content={
-                "error": {
-                    "code": "ACCESS_TOKEN_REQUIRED",
-                    "message": "This instance requires the shared access token.",
-                    "details": {},
-                }
-            },
+            status_code=401, content={"error": {"code": code, "message": message, "details": {}}}
         )
 
     if resolved.cors_origins:
@@ -226,9 +245,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @application.exception_handler(StarletteHTTPException)
-    async def handle_http_error(
-        request: Request, exc: StarletteHTTPException
-    ) -> JSONResponse:
+    async def handle_http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
         return JSONResponse(
             status_code=exc.status_code,

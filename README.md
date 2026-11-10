@@ -97,16 +97,37 @@ By default bind to localhost (`127.0.0.1:8080:8080`) so the UI is not exposed to
 the network. To reach it from your own computer, either:
 
 - use an SSH tunnel (recommended): `ssh -L 8080:localhost:8080 user@server`, or
-- expose the port and set a shared access token:
+- expose the port (the access token is already on, see below):
 
   ```bash
   docker run -d --name trainhub --gpus all \
-    -p 8080:8080 -e TRAINHUB_ACCESS_TOKEN='<long-random-value>' \
-    -v trainhub_data:/data trainhub:0.1.0-gpu
+    -p 8080:8080 -v trainhub_data:/data trainhub:0.1.0-gpu
   ```
 
-  The browser will prompt for the token once. Put a TLS reverse proxy in front
-  for anything internet-facing.
+  Put a TLS reverse proxy in front for anything internet-facing.
+
+### Access token (ON by default)
+
+On first boot TrainHub generates a random token, stores it in
+`/data/access-token` (mode 0600) and prints it **once** in the container logs
+(`docker logs trainhub | grep "FIRST BOOT"`). Every `/api` call and WebSocket needs
+it; the browser asks for it once and keeps it in that browser only. A wrong token
+shows a clear "rejected (401)" message.
+
+- Read it again: `docker exec trainhub cat /data/access-token`
+- Lost it / leaked it: `docker exec trainhub trainhub --reset-token`, then
+  `docker restart trainhub`
+- Use your own value: set `TRAINHUB_ACCESS_TOKEN` (not written to disk).
+- Opt out (trusted localhost only): `-e TRAINHUB_AUTH_DISABLED=true`. Every boot then
+  logs a loud `SECURITY` warning and the UI shows a banner.
+
+### Limits and download safety
+
+- Upload cap: `TRAINHUB_MAX_UPLOAD_SIZE_BYTES` (default 50 GiB). Larger uploads get
+  HTTP 413 with the size and the limit in the message.
+- Checkpoint downloads accept `https://` sources only, never loopback / private /
+  link-local (cloud-metadata) addresses, and follow at most 3 redirects (each
+  re-checked). A refused source offers **Import from file**.
 
 ### GPU compatibility
 
@@ -128,7 +149,9 @@ older drivers (< 525.60.13), and multi-GPU slots.
 |---|---|---|
 | `TRAINHUB_HOME` | `/data` (image) | Workspace root; all state lives here [doc 04] |
 | `TRAINHUB_DEVICE` | `auto` | `auto` \| `cpu` \| `cuda` \| `cuda:N` [doc 14 §3] |
-| `TRAINHUB_ACCESS_TOKEN` | unset | Optional shared token (set it if not localhost) [doc 10 §2] |
+| `TRAINHUB_ACCESS_TOKEN` | auto-generated | Shared token; unset = generated on first boot into `/data/access-token` [doc 10 §2] |
+| `TRAINHUB_AUTH_DISABLED` | `false` | `true` turns auth off (loud warning each boot) |
+| `TRAINHUB_MAX_UPLOAD_SIZE_BYTES` | 50 GiB | Total upload cap (HTTP 413 above it) |
 | `TRAINHUB_BIND_HOST` | `0.0.0.0` (image) | Address to bind; `127.0.0.1` = local only |
 | `TRAINHUB_MAX_CPU_JOBS` | `1` | Concurrent CPU training jobs |
 | `TRAINHUB_LOG_LEVEL` | `INFO` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` |
@@ -160,13 +183,13 @@ Or pre-copy a `checkpoints/store` folder into the volume and run
 ## With Docker Compose
 
 ```bash
-cd deploy && cp .env.example .env   # then edit (set TRAINHUB_ACCESS_TOKEN)
+cd deploy && cp .env.example .env   # optional; the token is auto-generated on first boot
 docker compose up -d                 # CPU image (no GPU)
 docker compose --profile gpu up -d   # GPU image (--gpus all passthrough)
 ```
 
 The UI binds to `127.0.0.1:8080` by default; set `TRAINHUB_PORT=8080:8080` in
-`deploy/.env` to expose it to the network (set `TRAINHUB_ACCESS_TOKEN` too).
+`deploy/.env` to expose it to the network (the access token is on by default).
 
 ## Build & publish the image
 

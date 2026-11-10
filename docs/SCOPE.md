@@ -12,7 +12,7 @@ Status values: verified · tested · code_only · planned · blocked.
 | Live run page, pause/resume/stop, exact resume | tested |
 | Evaluation, Predictions tab, weights export | verified |
 | Auto-select + auto-download + failure handling + Import from file (Slice D) | tested |
-| Token default ON, upload cap, SSRF guard (Slice E) | planned |
+| Token default ON, upload cap, SSRF guard (Slice E) | tested |
 | Device auto + config number types + header fixes (Slice F) | planned |
 
 ## Out / deferred

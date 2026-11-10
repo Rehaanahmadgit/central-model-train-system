@@ -136,14 +136,15 @@ def _rescan(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trainhub", description="TrainHub operator CLI")
     parser.add_argument("--home", help="workspace root (default: TRAINHUB_HOME)")
+    parser.add_argument(
+        "--reset-token", action="store_true", help="generate a new access token, then restart"
+    )
     commands = parser.add_subparsers(dest="command", required=True)
 
     doctor = commands.add_parser("doctor", help="check the environment in plain words")
     doctor.set_defaults(handler=_doctor)
 
-    checkpoints = commands.add_parser(
-        "checkpoints", help="catalog, prefetch, import, rescan"
-    )
+    checkpoints = commands.add_parser("checkpoints", help="catalog, prefetch, import, rescan")
     nested = checkpoints.add_subparsers(dest="subcommand", required=True)
 
     prefetch = nested.add_parser("prefetch", help="download a catalog entry now")
@@ -168,8 +169,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _reset_token(home: Path) -> int:
+    from app.core.auth import reset_token, token_file
+
+    token = reset_token(home)
+    print(f"New access token written to {token_file(home)} (mode 0600):\n{token}")
+    print("Restart the container so the running server loads it: docker restart trainhub")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if "--reset-token" in arguments:
+        arguments.remove("--reset-token")
+        probe = argparse.ArgumentParser(add_help=False)
+        probe.add_argument("--home")
+        known, _ = probe.parse_known_args(arguments)
+        return _reset_token(Path(known.home) if known.home else Settings().home)
+    args = build_parser().parse_args(arguments)
     return int(args.handler(args))
 
 

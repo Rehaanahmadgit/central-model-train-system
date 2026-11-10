@@ -27,9 +27,7 @@ def test_init_upload_returns_status(client: TestClient) -> None:
 
 
 def test_init_rejects_too_large_upload(client: TestClient) -> None:
-    response = client.post(
-        "/api/v1/uploads", json={"filename": "huge.zip", "size_bytes": 10**15}
-    )
+    response = client.post("/api/v1/uploads", json={"filename": "huge.zip", "size_bytes": 10**15})
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "UPLOAD_TOO_LARGE"
 
@@ -140,3 +138,31 @@ def test_unknown_upload_404(client: TestClient) -> None:
     response = client.post(f"/api/v1/uploads/{missing}/complete")
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "UPLOAD_NOT_FOUND"
+
+
+# --- Slice E: clear 413 messages ----------------------------------------------
+
+
+def test_413_message_states_size_and_limit(tmp_path: Path) -> None:
+    settings = Settings(
+        home=tmp_path / "home", max_upload_size_bytes=2 * 1024**3, log_level="DEBUG"
+    )
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/api/v1/uploads", json={"filename": "big.zip", "size_bytes": 5 * 1024**3}
+        )
+    assert response.status_code == 413
+    error = response.json()["error"]
+    assert error["code"] == "UPLOAD_TOO_LARGE"
+    assert "5.00 GB" in error["message"] and "2.00 GB" in error["message"]
+    assert error["details"]["max_bytes"] == 2 * 1024**3
+
+
+def test_oversized_chunk_is_413_before_buffering(tmp_path: Path) -> None:
+    settings = Settings(home=tmp_path / "home", chunk_size_bytes=8, log_level="DEBUG")
+    with TestClient(create_app(settings)) as client:
+        info = _init(client, "data.csv", 64)
+        response = client.put(f"/api/v1/uploads/{info['upload_id']}/chunks/0", content=b"x" * 9)
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "CHUNK_TOO_LARGE"
+    assert "8 bytes" in response.json()["error"]["message"]
