@@ -1,0 +1,21 @@
+# Status only with evidence. verified = tests + user ran it (this chat).
+# values: verified | tested | code_only | planned | blocked
+capabilities:
+  - {id: upload_dataset, status: verified, evidence: "S3 tests; user upload"}
+  - {id: verify_dataset, status: verified, evidence: "24 checks, Slice B tests; user verify"}
+  - {id: rtdetr_train_gpu, status: verified, evidence: "user run r18 apple-orange val 0.873 / test 0.825"}
+  - {id: predictions_tab, status: verified, evidence: "user ran; predictions-logic.spec.ts"}
+  - {id: weights_download, status: verified, evidence: "user ran"}
+  - {id: run_again, status: verified, evidence: "user ran"}
+  - {id: train_engine_shared, status: tested, evidence: "test_engine.py, golden test"}
+  - {id: licence_card_and_gate, status: tested, evidence: "test_licences.py, licence-logic.spec.ts"}
+  - {id: checkpoint_resolver, status: tested, evidence: "S7 tests (sha mismatch, lock, resume, import)"}
+  - {id: cnn_trainer, status: tested, evidence: "S8 tests"}
+  - {id: random_forest_trainer, status: tested, evidence: "S8 tests"}
+  - {id: checkpoint_auto_select, status: planned, evidence: "Slice D"}
+  - {id: checkpoint_auto_download, status: planned, evidence: "Slice D"}
+  - {id: token_default_on, status: planned, evidence: "Slice E"}
+  - {id: device_auto_banner, status: planned, evidence: "Slice F"}
+  - {id: gpu_container_run, status: blocked, evidence: "NVIDIA Container Toolkit not installed on dev host"}
+  - {id: published_image, status: blocked, evidence: "registry TODO(user)"}
+  - {id: rtdetr_l_weights, status: blocked, evidence: "URL/sha256/licence TODO(user)"}
